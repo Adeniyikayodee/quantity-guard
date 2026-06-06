@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quantity-guard"
+version = "0.3.1"
+description = "Typed physical quantities at the AI agent tool boundary: units, vertical datums, timezones, and record quality, enforced at call time."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["llm", "agents", "units", "mcp", "tool-calling", "hydrology", "engineering"]
+authors = [{ name = "Kayode Adeniyi" }]
+dependencies = ["pint>=0.23"]
