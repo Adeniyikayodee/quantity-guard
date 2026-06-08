@@ -17,3 +17,15 @@ from .errors import DatumConversionUnavailable, DatumMismatch
 ureg = pint.UnitRegistry()
 
 # Units in common engineering and hydrology use that pint does not ship.
+_EXTRA_UNITS = [
+    "cfs = foot ** 3 / second",
+    "cms = meter ** 3 / second",
+    "mgd = 1e6 * gallon / day",
+    "sfd = foot ** 3 / second * day",
+]
+
+for _defn in _EXTRA_UNITS:
+    try:
+        ureg.define(_defn)
+    except (pint.errors.RedefinitionError, pint.errors.DefinitionSyntaxError):
+        pass
