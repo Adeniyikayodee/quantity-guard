@@ -29,3 +29,6 @@ for _defn in _EXTRA_UNITS:
         ureg.define(_defn)
     except (pint.errors.RedefinitionError, pint.errors.DefinitionSyntaxError):
         pass
+
+
+# Quality flags -------------------------------------------------------------------------
