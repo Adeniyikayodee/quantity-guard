@@ -48,3 +48,18 @@ class MissingUnit(GuardViolation):
 
 class UnitParseError(GuardViolation):
     code = "unit_parse_error"
+
+
+class DimensionalityError(GuardViolation):
+    """The value is the wrong kind of physical quantity, such as a length where a
+    volumetric flow rate is required."""
+
+    code = "dimensionality_error"
+
+
+class DatumMismatch(GuardViolation):
+    """Dimensionally compatible but semantically incompatible, which is the error class
+    `pint` cannot detect, as in two elevations expressed in feet against different
+    vertical references."""
+
+    code = "datum_mismatch"
