@@ -63,3 +63,14 @@ class DatumMismatch(GuardViolation):
     vertical references."""
 
     code = "datum_mismatch"
+
+
+class DatumConversionUnavailable(GuardViolation):
+    """No offset is registered between the two datums.
+
+    The conversion is refused rather than guessed, because NAVD88 to NGVD29 varies with
+    location (VERTCON) and any constant offset would be quietly wrong across most of the
+    domain.
+    """
+
+    code = "datum_conversion_unavailable"
