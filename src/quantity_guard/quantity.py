@@ -56,3 +56,7 @@ class Q:
         if isinstance(pq, (int, float)) or pq.dimensionless:
             raise UnitParseError(f"{text!r} carries no unit")
         return cls(pq.magnitude, pq.units, **meta)
+
+    @property
+    def pint(self) -> pint.Quantity:
+        return ureg.Quantity(self.magnitude, self.units)
