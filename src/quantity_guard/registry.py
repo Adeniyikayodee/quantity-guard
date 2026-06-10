@@ -32,3 +32,13 @@ for _defn in _EXTRA_UNITS:
 
 
 # Quality flags -------------------------------------------------------------------------
+
+# Higher rank means less trustworthy. Combining quantities takes the worst known rank, so
+# any computation touching provisional record yields a provisional answer.
+QUALITY_RANK: dict[str, int] = {
+    "approved": 0,
+    "reviewed": 0,
+    "estimated": 1,
+    "provisional": 2,
+    "unverified": 3,
+}
