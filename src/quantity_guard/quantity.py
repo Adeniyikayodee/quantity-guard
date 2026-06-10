@@ -60,3 +60,7 @@ class Q:
     @property
     def pint(self) -> pint.Quantity:
         return ureg.Quantity(self.magnitude, self.units)
+
+    @property
+    def dimensionality(self):
+        return self.pint.dimensionality
