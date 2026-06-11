@@ -42,3 +42,5 @@ QUALITY_RANK: dict[str, int] = {
     "provisional": 2,
     "unverified": 3,
 }
+
+# Single-letter codes as published on USGS time series.
