@@ -44,3 +44,11 @@ QUALITY_RANK: dict[str, int] = {
 }
 
 # Single-letter codes as published on USGS time series.
+QUALITY_ALIASES: dict[str, str] = {
+    "A": "approved",
+    "R": "reviewed",
+    "e": "estimated",
+    "E": "estimated",
+    "P": "provisional",
+    "p": "provisional",
+}
