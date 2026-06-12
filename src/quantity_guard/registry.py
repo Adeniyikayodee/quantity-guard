@@ -52,3 +52,17 @@ QUALITY_ALIASES: dict[str, str] = {
     "P": "provisional",
     "p": "provisional",
 }
+
+
+def normalize_quality(flag: str | None) -> str | None:
+    if flag is None:
+        return None
+    flag = QUALITY_ALIASES.get(flag, str(flag).strip().lower())
+    if flag not in QUALITY_RANK:
+        raise ValueError(f"unknown quality flag {flag!r}, known: {sorted(QUALITY_RANK)}")
+    return flag
+
+
+def worst_quality(*flags: str | None) -> str | None:
+    known = [f for f in flags if f is not None]
+    return max(known, key=lambda f: QUALITY_RANK[f]) if known else None
