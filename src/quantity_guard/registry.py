@@ -66,3 +66,6 @@ def normalize_quality(flag: str | None) -> str | None:
 def worst_quality(*flags: str | None) -> str | None:
     known = [f for f in flags if f is not None]
     return max(known, key=lambda f: QUALITY_RANK[f]) if known else None
+
+
+# Datums --------------------------------------------------------------------------------
