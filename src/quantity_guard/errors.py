@@ -74,3 +74,13 @@ class DatumConversionUnavailable(GuardViolation):
     """
 
     code = "datum_conversion_unavailable"
+
+
+class CRSMismatch(GuardViolation):
+    code = "crs_mismatch"
+
+
+class TimezoneError(GuardViolation):
+    """A naive timestamp, or one outside the timezone the tool declares."""
+
+    code = "timezone_error"
