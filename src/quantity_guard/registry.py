@@ -69,3 +69,17 @@ def worst_quality(*flags: str | None) -> str | None:
 
 
 # Datums --------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Datum:
+    """A measurement reference frame.
+
+    Absolute datums describe position relative to a fixed reference, such as an elevation
+    above NAVD88. The difference between two absolute readings on the same datum is a
+    delta carrying no datum, which is what makes freeboard arithmetic well-defined.
+    """
+
+    name: str
+    kind: str = "vertical"
+    description: str = ""
