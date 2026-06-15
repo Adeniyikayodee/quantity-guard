@@ -76,3 +76,16 @@ class Q:
                 f"cannot express {self:~} as {unit}, {exc}"
             ) from None
         return replace(self, magnitude=converted.magnitude, units=converted.units)
+
+    def to_datum(self, target: str) -> Q:
+        """Shift to another vertical datum using a registered local offset."""
+        if self.datum is None:
+            raise DatumMismatch(
+                f"{self:~} carries no datum, so it cannot be shifted to {target!r}, "
+                f"since only absolute elevations have a vertical reference"
+            )
+        offset_m = _datums.offset_metres(self.datum, target)
+        shifted = self.pint + ureg.Quantity(offset_m, "meter").to(self.units)
+        return replace(self, magnitude=shifted.magnitude, datum=target)
+
+    # Arithmetic ------------------------------------------------------------------------
