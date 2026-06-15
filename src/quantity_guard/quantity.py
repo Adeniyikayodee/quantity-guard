@@ -64,3 +64,15 @@ class Q:
     @property
     def dimensionality(self):
         return self.pint.dimensionality
+
+    # Conversion ------------------------------------------------------------------------
+
+    def to(self, unit: str | Any) -> Q:
+        """Convert units, preserving all reference metadata."""
+        try:
+            converted = self.pint.to(unit)
+        except pint.DimensionalityError as exc:
+            raise DimensionalityError(
+                f"cannot express {self:~} as {unit}, {exc}"
+            ) from None
+        return replace(self, magnitude=converted.magnitude, units=converted.units)
