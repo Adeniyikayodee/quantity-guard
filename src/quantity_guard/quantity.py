@@ -89,3 +89,10 @@ class Q:
         return replace(self, magnitude=shifted.magnitude, datum=target)
 
     # Arithmetic ------------------------------------------------------------------------
+
+    def _check_frames(self, other: Q, op: str) -> None:
+        if self.crs != other.crs and None not in (self.crs, other.crs):
+            raise CRSMismatch(
+                f"cannot {op} values in different coordinate reference systems "
+                f"({self.crs} and {other.crs}), reproject first"
+            )
