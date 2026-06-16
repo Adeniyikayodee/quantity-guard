@@ -162,3 +162,26 @@ class Q:
             right, quality, crs = other, self.quality, self.crs
         result = self.pint * right if op == "multiply" else self.pint / right
         return Q(result.magnitude, result.units, crs=crs, quality=quality)
+
+    def __mul__(self, other: Any) -> Q:
+        return self._scale(other, "multiply")
+
+    __rmul__ = __mul__
+
+    def __truediv__(self, other: Any) -> Q:
+        return self._scale(other, "divide")
+
+    # Comparison ------------------------------------------------------------------------
+
+    def _comparable(self, other: Q) -> tuple[float, float]:
+        if not isinstance(other, Q):
+            raise TypeError(f"cannot compare Q against {type(other).__name__}")
+        if self.datum != other.datum:
+            raise DatumMismatch(
+                f"cannot compare a value on {self.datum} against one on {other.datum}, "
+                f"since the comparison is only meaningful on a shared reference"
+            )
+        try:
+            return self.pint.magnitude, other.pint.to(self.units).magnitude
+        except pint.DimensionalityError as exc:
+            raise DimensionalityError(f"cannot compare {self:~} with {other:~}, {exc}") from None
