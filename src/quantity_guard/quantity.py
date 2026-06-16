@@ -96,3 +96,69 @@ class Q:
                 f"cannot {op} values in different coordinate reference systems "
                 f"({self.crs} and {other.crs}), reproject first"
             )
+
+    def __add__(self, other: Q) -> Q:
+        if not isinstance(other, Q):
+            return NotImplemented
+        self._check_frames(other, "add")
+        if self.datum is not None and other.datum is not None:
+            raise DatumMismatch(
+                f"cannot add two absolute elevations ({self.datum} and {other.datum}), "
+                f"since their sum has no physical meaning; add a delta to an elevation "
+                f"instead, or difference them to obtain one"
+            )
+        try:
+            total = self.pint + other.pint
+        except pint.DimensionalityError as exc:
+            raise DimensionalityError(f"cannot add {self:~} to {other:~}, {exc}") from None
+        return Q(
+            total.magnitude,
+            total.units,
+            datum=self.datum or other.datum,
+            crs=self.crs or other.crs,
+            quality=worst_quality(self.quality, other.quality),
+        )
+
+    def __sub__(self, other: Q) -> Q:
+        if not isinstance(other, Q):
+            return NotImplemented
+        self._check_frames(other, "subtract")
+        if self.datum != other.datum and None not in (self.datum, other.datum):
+            raise DatumMismatch(
+                f"cannot difference an elevation on {self.datum} against one on "
+                f"{other.datum}, since both are in compatible units but measured from "
+                f"different references; convert one with `.to_datum()` after registering "
+                f"the local offset",
+                left_datum=self.datum,
+                right_datum=other.datum,
+            )
+        try:
+            diff = self.pint - other.pint
+        except pint.DimensionalityError as exc:
+            raise DimensionalityError(
+                f"cannot subtract {other:~} from {self:~}, {exc}"
+            ) from None
+        # Differencing two readings on one datum yields a delta, which carries no datum.
+        datum = None if (self.datum and other.datum) else (self.datum or other.datum)
+        return Q(
+            diff.magnitude,
+            diff.units,
+            datum=datum,
+            crs=self.crs or other.crs,
+            quality=worst_quality(self.quality, other.quality),
+        )
+
+    def _scale(self, other: Any, op: str) -> Q:
+        if isinstance(other, Q):
+            if self.datum is not None or other.datum is not None:
+                raise DatumMismatch(
+                    f"cannot {op} absolute elevations, since the product of two values "
+                    f"measured from a vertical reference has no meaning; difference them "
+                    f"to deltas first"
+                )
+            right, quality = other.pint, worst_quality(self.quality, other.quality)
+            crs = self.crs or other.crs
+        else:
+            right, quality, crs = other, self.quality, self.crs
+        result = self.pint * right if op == "multiply" else self.pint / right
+        return Q(result.magnitude, result.units, crs=crs, quality=quality)
