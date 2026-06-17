@@ -185,3 +185,42 @@ class Q:
             return self.pint.magnitude, other.pint.to(self.units).magnitude
         except pint.DimensionalityError as exc:
             raise DimensionalityError(f"cannot compare {self:~} with {other:~}, {exc}") from None
+
+    def __lt__(self, other: Q) -> bool:
+        left, right = self._comparable(other)
+        return left < right
+
+    def __le__(self, other: Q) -> bool:
+        left, right = self._comparable(other)
+        return left <= right
+
+    def __gt__(self, other: Q) -> bool:
+        left, right = self._comparable(other)
+        return left > right
+
+    def __ge__(self, other: Q) -> bool:
+        left, right = self._comparable(other)
+        return left >= right
+
+    # Serialisation ---------------------------------------------------------------------
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "value": self.magnitude,
+            "unit": format(self.units, "~"),
+        }
+        for key in ("datum", "crs", "quality", "source"):
+            if getattr(self, key) is not None:
+                payload[key] = getattr(self, key)
+        return payload
+
+    def __format__(self, spec: str) -> str:
+        if spec in ("", "~"):
+            body = f"{self.magnitude:g} {self.units:~P}"
+        else:
+            body = format(self.pint, spec)
+        tags = [t for t in (self.datum, self.quality) if t]
+        return f"{body} ({', '.join(tags)})" if tags else body
+
+    def __repr__(self) -> str:
+        return f"Q({self:~})"
