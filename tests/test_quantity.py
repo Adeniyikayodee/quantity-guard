@@ -86,3 +86,13 @@ def test_multiplying_elevations_is_refused():
 def test_division_carries_units_through():
     depth = Q(35.4, "m**3/s") / Q(29000, "km**2")
     assert depth.to("mm/day").magnitude == pytest.approx(0.1054, rel=1e-2)
+
+
+def test_parse_from_string():
+    q = Q.parse("1250 cfs")
+    assert q.magnitude == 1250
+
+
+def test_bare_string_without_unit_is_refused():
+    with pytest.raises(Exception):
+        Q.parse("1250")
