@@ -76,3 +76,13 @@ def test_comparison_across_datums_is_refused():
 
 def test_comparison_converts_units():
     assert Q(1, "m") > Q(3, "ft")
+
+
+def test_multiplying_elevations_is_refused():
+    with pytest.raises(DatumMismatch):
+        Q(31.0, "ft", datum="NAVD88") * Q(2.0, "ft", datum="NAVD88")
+
+
+def test_division_carries_units_through():
+    depth = Q(35.4, "m**3/s") / Q(29000, "km**2")
+    assert depth.to("mm/day").magnitude == pytest.approx(0.1054, rel=1e-2)
