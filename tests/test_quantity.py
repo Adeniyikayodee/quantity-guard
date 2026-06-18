@@ -53,3 +53,26 @@ def test_a_delta_may_be_added_to_an_elevation():
     result = Q(28.1, "ft", datum="NAVD88") + Q(2.9, "ft")
     assert result.datum == "NAVD88"
     assert result.magnitude == pytest.approx(31.0)
+
+
+def test_datum_shift_requires_a_registered_offset():
+    with pytest.raises(DatumConversionUnavailable):
+        Q(31.0, "ft", datum="NAVD88").to_datum("NGVD29")
+
+
+def test_registered_offset_enables_the_shift():
+    datums.register("TEST_GAGE")
+    datums.register_offset("TEST_GAGE", "NAVD88", Q(1.5, "ft"))
+    shifted = Q(12.4, "ft", datum="TEST_GAGE").to_datum("NAVD88")
+    assert shifted.magnitude == pytest.approx(13.9)
+    assert shifted.datum == "NAVD88"
+
+
+def test_comparison_across_datums_is_refused():
+    datums.register("TEST_CMP")
+    with pytest.raises(DatumMismatch):
+        assert Q(31.0, "ft", datum="NAVD88") > Q(12.4, "ft", datum="TEST_CMP")
+
+
+def test_comparison_converts_units():
+    assert Q(1, "m") > Q(3, "ft")
