@@ -63,3 +63,8 @@ class Spec:
         raise TypeError(f"cannot read a Spec from {type(obj).__name__}")
 
     # Validation ------------------------------------------------------------------------
+
+    def coerce(self, value: Any, field: str) -> Any:
+        if not self.is_physical:
+            return value
+        return self._coerce_time(value, field) if self.is_temporal else self._coerce_quantity(value, field)
