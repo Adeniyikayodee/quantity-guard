@@ -68,3 +68,27 @@ class Spec:
         if not self.is_physical:
             return value
         return self._coerce_time(value, field) if self.is_temporal else self._coerce_quantity(value, field)
+
+    def _coerce_time(self, value: Any, field: str) -> datetime:
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value)
+            except ValueError:
+                raise TimezoneError(
+                    f"cannot read {value!r} as a timestamp, send ISO 8601 with an offset "
+                    f"such as '2026-08-14T09:30:00-05:00'",
+                    field=field,
+                ) from None
+        if not isinstance(value, datetime):
+            raise TimezoneError(
+                f"expected a timestamp, received {type(value).__name__}", field=field
+            )
+        if value.tzinfo is None:
+            raise TimezoneError(
+                f"timestamp {value.isoformat()} is timezone-naive, and gage records are "
+                f"published in local standard time while models default to UTC, so the "
+                f"offset must be explicit; resend as ISO 8601 with an offset",
+                field=field,
+            )
+        target = timezone.utc if self.tz.upper() == "UTC" else self._zone(field)
+        return value.astimezone(target)
