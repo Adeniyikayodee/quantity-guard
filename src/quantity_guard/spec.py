@@ -51,3 +51,15 @@ class Spec:
     def is_physical(self) -> bool:
         """False for a spec that declares no unit and no timezone, such as an identifier."""
         return self.unit is not None or self.tz is not None
+
+    @classmethod
+    def coerce_spec(cls, obj: Any) -> Spec:
+        if isinstance(obj, Spec):
+            return obj
+        if isinstance(obj, str):
+            return cls(unit=obj)
+        if isinstance(obj, dict):
+            return cls(**obj)
+        raise TypeError(f"cannot read a Spec from {type(obj).__name__}")
+
+    # Validation ------------------------------------------------------------------------
