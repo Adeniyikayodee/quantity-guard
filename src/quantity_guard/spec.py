@@ -92,3 +92,39 @@ class Spec:
             )
         target = timezone.utc if self.tz.upper() == "UTC" else self._zone(field)
         return value.astimezone(target)
+
+    def _zone(self, field: str) -> ZoneInfo:
+        try:
+            return ZoneInfo(self.tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise TimezoneError(f"unknown timezone {self.tz!r}", field=field) from None
+
+    def _coerce_quantity(self, value: Any, field: str) -> Q:
+        quantity = self._to_quantity(value, field)
+        quantity = self._check_datum(quantity, field)
+
+        if self.crs and quantity.crs and quantity.crs != self.crs:
+            raise CRSMismatch(
+                f"expected {self.crs}, received {quantity.crs}", field=field
+            )
+
+        if self.quality and quantity.quality:
+            if QUALITY_RANK[quantity.quality] > QUALITY_RANK[normalize_quality(self.quality)]:
+                raise QualityViolation(
+                    f"this tool requires {self.quality} record, and the value supplied is "
+                    f"{quantity.quality}",
+                    field=field,
+                )
+
+        if self.unit:
+            try:
+                quantity = quantity.to(self.unit)
+            except DimensionalityError:
+                raise DimensionalityError(
+                    f"expected a quantity in {self.unit} "
+                    f"({self._dimension_name(self.unit)}), received {quantity:~} "
+                    f"({self._dimension_name(quantity.units)}); these are different "
+                    f"physical quantities and no conversion exists",
+                    field=field,
+                ) from None
+        return quantity
