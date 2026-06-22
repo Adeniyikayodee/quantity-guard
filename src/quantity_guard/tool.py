@@ -74,3 +74,20 @@ class GuardedTool:
             for name, value in self._iter_quantities(result):
                 session.record(self.name, "output", name, value)
         return result
+
+    def _validate_result(self, result: Any) -> Any:
+        if self.returns is None:
+            return result
+        if isinstance(self.returns, Spec):
+            return self.returns.coerce(result, field="return")
+        if not isinstance(result, dict):
+            raise GuardViolation(
+                f"{self.name} declares a mapping of return values, so it must return a dict",
+                field="return",
+            )
+        return {
+            key: self.returns[key].coerce(value, field=f"return.{key}")
+            if key in self.returns
+            else value
+            for key, value in result.items()
+        }
