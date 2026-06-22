@@ -128,3 +128,131 @@ class Spec:
                     field=field,
                 ) from None
         return quantity
+
+    def _to_quantity(self, value: Any, field: str) -> Q:
+        if isinstance(value, Q):
+            return value
+        if isinstance(value, dict):
+            if "value" not in value:
+                raise UnitParseError(
+                    f"quantity object needs a 'value' key, received keys "
+                    f"{sorted(value)}",
+                    field=field,
+                )
+            unit = value.get("unit") or self.unit
+            if unit is None:
+                raise MissingUnit(f"no unit given and none declared", field=field)
+            return Q(
+                value["value"],
+                unit,
+                datum=value.get("datum"),
+                crs=value.get("crs"),
+                quality=value.get("quality"),
+                source=value.get("source"),
+            )
+        if isinstance(value, str):
+            return Q.parse(value)
+        if isinstance(value, (int, float)):
+            if self.require_explicit_unit:
+                raise MissingUnit(
+                    f"this tool requires an explicit unit, so send "
+                    f'{{"value": {value}, "unit": "<unit>"}} rather than a bare number',
+                    field=field,
+                )
+            if self.unit is None:
+                raise MissingUnit("no unit declared for this parameter", field=field)
+            # A bare number is the declared unit by contract, since the schema states it.
+            return Q(value, self.unit, datum=self.datum)
+        raise UnitParseError(
+            f"cannot read a quantity from {type(value).__name__}", field=field
+        )
+
+    def _check_datum(self, quantity: Q, field: str) -> Q:
+        if not self.datum:
+            return quantity
+        if quantity.datum is None:
+            # Trusting the declared datum here is the contract, as with bare units.
+            return Q(
+                quantity.magnitude,
+                quantity.units,
+                datum=self.datum,
+                crs=quantity.crs,
+                quality=quantity.quality,
+                source=quantity.source,
+            )
+        if quantity.datum == self.datum:
+            return quantity
+        raise DatumMismatch(
+            f"expected an elevation referenced to {self.datum}, received one referenced "
+            f"to {quantity.datum}; both are in compatible units but measured from "
+            f"different references, so resend the value on {self.datum} or register the "
+            f"local offset between them",
+            field=field,
+            expected=self.datum,
+            received=quantity.datum,
+        )
+
+    @staticmethod
+    def _dimension_name(unit: Any) -> str:
+        try:
+            dims = ureg.Quantity(1, unit).dimensionality
+        except (pint.errors.UndefinedUnitError, TypeError):
+            return "unknown"
+        return " ".join(f"{k}^{v:g}" if v != 1 else k for k, v in dims.items()) or "dimensionless"
+
+    # Schema ----------------------------------------------------------------------------
+
+    def json_schema(self) -> dict[str, Any]:
+        """JSON Schema fragment, extended with the physical metadata the model needs."""
+        if not self.is_physical:
+            return {"description": self.description}
+
+        if self.is_temporal:
+            schema: dict[str, Any] = {
+                "type": "string",
+                "format": "date-time",
+                "description": (
+                    f"{self.description} ISO 8601 with an explicit UTC offset, "
+                    f"interpreted in {self.tz}."
+                ).strip(),
+                "x-tz": self.tz,
+            }
+            return schema
+
+        obj_props: dict[str, Any] = {
+            "value": {"type": "number"},
+            "unit": {"type": "string", "description": f"defaults to {self.unit}"},
+        }
+        if self.datum:
+            obj_props["datum"] = {"type": "string", "description": f"defaults to {self.datum}"}
+        if self.crs:
+            obj_props["crs"] = {"type": "string"}
+        obj_props["quality"] = {"type": "string", "enum": sorted(QUALITY_RANK)}
+
+        variants: list[dict[str, Any]] = []
+        if not self.require_explicit_unit:
+            variants.append({"type": "number", "description": f"magnitude in {self.unit}"})
+        variants.append(
+            {
+                "type": "object",
+                "properties": obj_props,
+                "required": ["value", "unit"],
+                "additionalProperties": False,
+            }
+        )
+        variants.append({"type": "string", "description": f'quantity with unit, e.g. "1.5 {self.unit}"'})
+
+        described = self.description
+        if self.datum:
+            described += f" Referenced to {self.datum}."
+        if self.quality:
+            described += f" Requires {self.quality} record or better."
+
+        schema = {"description": described.strip(), "x-unit": self.unit, "oneOf": variants}
+        if self.datum:
+            schema["x-datum"] = self.datum
+        if self.crs:
+            schema["x-crs"] = self.crs
+        if self.quality:
+            schema["x-quality"] = self.quality
+        return schema
