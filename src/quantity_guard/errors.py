@@ -84,3 +84,25 @@ class TimezoneError(GuardViolation):
     """A naive timestamp, or one outside the timezone the tool declares."""
 
     code = "timezone_error"
+
+
+class QualityViolation(GuardViolation):
+    """The result rests on record too provisional for the tool's stated requirement."""
+
+    code = "quality_violation"
+
+
+class UnconvertedCarryOver(GuardViolation):
+    """A magnitude was carried from one tool to another without its unit.
+
+    The incoming bare number equals a value a previous tool returned in a different but
+    dimensionally compatible unit, which indicates the conversion step was skipped.
+    """
+
+    code = "unconverted_carry_over"
+
+
+class UnsourcedNumber(GuardViolation):
+    """A number in the final answer traces to no recorded tool output."""
+
+    code = "unsourced_number"
