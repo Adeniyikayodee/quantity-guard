@@ -91,3 +91,12 @@ class GuardedTool:
             else value
             for key, value in result.items()
         }
+
+    @staticmethod
+    def _iter_quantities(result: Any):
+        if isinstance(result, Q):
+            yield "return", result
+        elif isinstance(result, dict):
+            for key, value in result.items():
+                if isinstance(value, Q):
+                    yield key, value
