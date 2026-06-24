@@ -100,3 +100,21 @@ class GuardedTool:
             for key, value in result.items():
                 if isinstance(value, Q):
                     yield key, value
+
+    def invoke(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call from an agent, returning an MCP-shaped result rather than raising.
+
+        A rejected call comes back as a tool error whose text tells the model what to
+        send instead, which keeps the failure inside the conversation where it can be
+        repaired.
+        """
+        try:
+            result = self(**payload)
+        except GuardViolation as violation:
+            return violation.to_tool_error()
+        except Exception as exc:  # pragma: no cover
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
+            }
+        return {"isError": False, "result": self._serialise(result)}
