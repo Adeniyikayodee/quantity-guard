@@ -118,3 +118,11 @@ class GuardedTool:
                 "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
             }
         return {"isError": False, "result": self._serialise(result)}
+
+    @staticmethod
+    def _serialise(result: Any) -> Any:
+        if isinstance(result, Q):
+            return result.as_dict()
+        if isinstance(result, dict):
+            return {k: v.as_dict() if isinstance(v, Q) else v for k, v in result.items()}
+        return result
