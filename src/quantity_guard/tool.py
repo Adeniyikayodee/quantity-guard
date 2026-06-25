@@ -126,3 +126,60 @@ class GuardedTool:
         if isinstance(result, dict):
             return {k: v.as_dict() if isinstance(v, Q) else v for k, v in result.items()}
         return result
+
+    # Schema ----------------------------------------------------------------------------
+
+    def json_schema(self) -> dict[str, Any]:
+        """Tool definition in MCP shape, carrying the physical metadata extensions.
+
+        """
+        required = [
+            name
+            for name, param in self.signature.parameters.items()
+            if param.default is inspect.Parameter.empty
+            and param.kind not in (param.VAR_POSITIONAL, param.VAR_KEYWORD)
+        ]
+        properties = {
+            name: (
+                self.params[name].json_schema()
+                if name in self.params
+                else {"description": f"{name}"}
+            )
+            for name in self.signature.parameters
+            if self.signature.parameters[name].kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        }
+        return {
+            "name": self.name,
+            "description": self.description,
+            "inputSchema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        }
+
+
+def quantity_tool(
+    params: dict[str, Any] | None = None,
+    returns: Any = None,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+):
+    """Declare the physical types of a tool's parameters and result.
+
+    >>> @quantity_tool(
+    ...     params={"stage": {"unit": "ft", "datum": "NAVD88"},
+    ...             "flood_stage": {"unit": "ft", "datum": "NAVD88"}},
+    ...     returns={"unit": "ft"},
+    ... )
+    ... def freeboard(stage, flood_stage):
+    ...     return flood_stage - stage
+    """
+
+    def decorate(fn: Callable) -> GuardedTool:
+        return GuardedTool(fn, params or {}, returns, name, description)
+
+    return decorate
