@@ -72,3 +72,36 @@ def test_explicit_unit_may_be_required():
 
     schema = strict.json_schema()["inputSchema"]["properties"]["q"]
     assert all(v.get("type") != "number" for v in schema["oneOf"])
+
+
+def test_quality_floor_is_enforced():
+    @quantity_tool(params={"q": {"unit": "m**3/s", "quality": "approved"}})
+    def publish(q):
+        return q
+
+    with pytest.raises(QualityViolation):
+        publish({"value": 1250, "unit": "cfs", "quality": "provisional"})
+    assert publish({"value": 1250, "unit": "cfs", "quality": "approved"})
+
+
+def test_datum_declared_on_a_spec_is_applied_and_checked():
+    @quantity_tool(params={"stage": {"unit": "ft", "datum": "NAVD88"}})
+    def elevation(stage):
+        return stage
+
+    assert elevation(31.0).datum == "NAVD88"
+    with pytest.raises(Exception):
+        elevation(Q(12.4, "ft", datum="NGVD29"))
+
+
+def test_naive_timestamps_are_refused():
+    @quantity_tool(params={"observed_at": {"tz": "America/Chicago"}})
+    def lookup(observed_at):
+        return observed_at
+
+    with pytest.raises(TimezoneError) as exc:
+        lookup("2026-08-14T09:30:00")
+    assert "timezone-naive" in exc.value.message
+
+    aware = lookup("2026-08-14T09:30:00-05:00")
+    assert aware.tzinfo is not None
