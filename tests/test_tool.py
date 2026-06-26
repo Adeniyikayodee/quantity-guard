@@ -45,3 +45,30 @@ def test_invoke_returns_a_repairable_tool_error():
     assert result["isError"] is True
     assert result["code"] == "dimensionality_error"
     assert "no conversion exists" in result["content"][0]["text"]
+
+
+def test_invoke_serialises_a_successful_result():
+    result = runoff_depth.invoke({"discharge": "1250 cfs", "area": 29000})
+    assert result["isError"] is False
+    assert "value" in result["result"] and "unit" in result["result"]
+
+
+def test_schema_carries_physical_metadata():
+    schema = runoff_depth.json_schema()
+    discharge = schema["inputSchema"]["properties"]["discharge"]
+    assert discharge["x-unit"] == "m**3/s"
+    assert set(schema["inputSchema"]["required"]) == {"discharge", "area"}
+    assert any(v.get("type") == "object" for v in discharge["oneOf"])
+
+
+def test_explicit_unit_may_be_required():
+    @quantity_tool(params={"q": {"unit": "m**3/s", "require_explicit_unit": True}})
+    def strict(q):
+        return q
+
+    with pytest.raises(MissingUnit):
+        strict(1250)
+    assert strict("1250 cfs").magnitude == pytest.approx(35.4, rel=1e-2)
+
+    schema = strict.json_schema()["inputSchema"]["properties"]["q"]
+    assert all(v.get("type") != "number" for v in schema["oneOf"])
