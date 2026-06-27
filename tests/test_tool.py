@@ -105,3 +105,20 @@ def test_naive_timestamps_are_refused():
 
     aware = lookup("2026-08-14T09:30:00-05:00")
     assert aware.tzinfo is not None
+
+
+def test_spec_for_unknown_parameter_is_rejected():
+    with pytest.raises(ValueError):
+
+        @quantity_tool(params={"nope": {"unit": "m"}})
+        def tool(q):
+            return q
+
+
+def test_object_form_serialised_into_a_string_is_accepted():
+    """Models frequently JSON-encode the object form into the string variant."""
+    import json
+
+    payload = json.dumps({"value": 1250.0, "unit": "cfs", "quality": "provisional"})
+    result = runoff_depth(payload, "29000 km**2")
+    assert result.to("mm/day").magnitude == pytest.approx(0.1054, rel=1e-2)
