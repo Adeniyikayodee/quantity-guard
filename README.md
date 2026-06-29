@@ -115,3 +115,99 @@ runoff_depth(discharge="12.4 ft", area="29000 km**2")
 # conversion exists
 ```
 
+## Schema generation
+
+`json_schema()` emits an MCP tool definition extended with `x-unit`, `x-datum`, `x-crs`,
+and `x-tz`, so the model reads the expected physical type before it calls:
+
+```python
+runoff_depth.json_schema()
+```
+
+```json
+{
+  "name": "runoff_depth",
+  "description": "Depth-equivalent runoff over the contributing area.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "discharge": {
+        "description": "Observed discharge.",
+        "x-unit": "m**3/s",
+        "oneOf": [
+          {"type": "number", "description": "magnitude in m**3/s"},
+          {"type": "object", "properties": {"value": {"type": "number"}, "unit": {"type": "string"}}},
+          {"type": "string", "description": "quantity with unit, e.g. \"1.5 m**3/s\""}
+        ]
+      }
+    },
+    "required": ["discharge", "area"],
+    "additionalProperties": false
+  }
+}
+```
+
+## Vertical datums
+
+Datums are named reference frames. Two quantities on different datums cannot be
+differenced or compared, and a conversion between them requires an offset that is
+registered explicitly, because the true offset varies with location and cannot be
+inferred.
+
+```python
+from quantity_guard import Q, datums
+from quantity_guard.packs.water import register_station
+
+register_station("07374000", Q(1.5, "ft", datum="NAVD88"))
+
+stage = Q(12.4, "ft", datum="GAGE:07374000")
+flood_stage = Q(31.0, "ft", datum="NAVD88")
+
+flood_stage - stage
+# DatumMismatch: cannot difference an elevation on NAVD88 against one on
+# GAGE:07374000, since both are in compatible units but measured from different
+# references
+
+flood_stage - stage.to_datum("NAVD88")
+# Q(17.1 ft)
+```
+
+Differencing two elevations on a shared datum yields a delta that carries no datum, which
+is what makes freeboard arithmetic well-defined while leaving the sum of two absolute
+elevations rejected.
+
+Where no offset has been registered, the conversion fails rather than guessing:
+
+```python
+Q(31.0, "ft", datum="NAVD88").to_datum("NGVD29")
+# DatumConversionUnavailable: no registered offset from 'NAVD88' to 'NGVD29'.
+# This conversion depends on location and will not be guessed
+```
+
+## Carry-over between tools
+
+A bare number entering a tool is read in that tool's declared unit, which is the contract
+the schema states. That contract breaks when a model takes a magnitude from one tool's
+output and passes it to another without the unit attached, which is the arithmetic behind
+most order-of-magnitude errors in agent transcripts.
+
+Inside a session the ledger makes this detectable. If an incoming bare number equals a
+value an earlier tool returned in a different but dimensionally compatible unit, the
+conversion was skipped:
+
+```python
+with session():
+    discharge = read_discharge("07374000")   # returns 1250 cfs
+    runoff_depth(discharge=1250, area=29000)
+# UnconvertedCarryOver: received the bare number 1250, which this tool reads as
+# 1250 m³/s, but read_discharge.return returned 1250 cfs and no conversion was
+# applied; resend the value with its original unit, as
+# {"value": 1250, "unit": "cfs"}
+```
+
+The unguarded version of that call returns a runoff depth 35 times too large, and nothing
+about the result looks wrong.
+
+For tools where no bare number is ever acceptable, `require_explicit_unit` refuses them
+outright rather than relying on the ledger.
+
