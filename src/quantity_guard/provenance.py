@@ -45,3 +45,19 @@ class CarryOver:
 
     entry: LedgerEntry
     reason: str  # "unit" or "datum"
+
+
+@dataclass
+class Session:
+    """Records quantities crossing tool boundaries within a block of agent work."""
+
+    entries: list[LedgerEntry] = field(default_factory=list)
+    calls: int = 0
+    started: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
+    )
+
+    def record(self, tool: str, role: str, name: str, quantity: Q, note: str = "") -> None:
+        self.entries.append(
+            LedgerEntry(tool=tool, role=role, field=name, quantity=quantity, call_id=self.calls, note=note)
+        )
