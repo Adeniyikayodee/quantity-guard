@@ -48,16 +48,12 @@ class CarryOver:
 
 
 @dataclass
-class Session:
-    """Records quantities crossing tool boundaries within a block of agent work."""
+class NumberClaim:
+    """A numeric literal found in an answer, with the verdict of the audit."""
 
-    entries: list[LedgerEntry] = field(default_factory=list)
-    calls: int = 0
-    started: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
-    )
-
-    def record(self, tool: str, role: str, name: str, quantity: Q, note: str = "") -> None:
-        self.entries.append(
-            LedgerEntry(tool=tool, role=role, field=name, quantity=quantity, call_id=self.calls, note=note)
-        )
+    text: str
+    value: float
+    unit: str | None
+    status: str  # "sourced", "unsourced", "unit_mislabelled", or "ignored"
+    matched: LedgerEntry | None = None
+    detail: str = ""
