@@ -15,7 +15,9 @@ from .errors import (
     QualityViolation,
     TimezoneError,
     UnitParseError,
+    UnsourcedNumber,
 )
+from .provenance import AnswerAudit, NumberClaim, Session, session
 from .quantity import Q
 from .registry import datums, ureg
 from .spec import Spec
@@ -28,6 +30,10 @@ __all__ = [
     "Spec",
     "quantity_tool",
     "GuardedTool",
+    "session",
+    "Session",
+    "AnswerAudit",
+    "NumberClaim",
     "datums",
     "ureg",
     "GuardViolation",
@@ -39,4 +45,5 @@ __all__ = [
     "QualityViolation",
     "MissingUnit",
     "UnitParseError",
+    "UnsourcedNumber",
 ]
