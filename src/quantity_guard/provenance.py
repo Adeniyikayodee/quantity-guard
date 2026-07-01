@@ -57,3 +57,8 @@ class NumberClaim:
     status: str  # "sourced", "unsourced", "unit_mislabelled", or "ignored"
     matched: LedgerEntry | None = None
     detail: str = ""
+
+
+@dataclass
+class AnswerAudit:
+    claims: list[NumberClaim]
