@@ -127,6 +127,30 @@ class Session:
     def outputs(self) -> list[LedgerEntry]:
         return [e for e in self.entries if e.role in ("output", "derived")]
 
+    def detect_carry_over(self, raw: Any, coerced: Q) -> CarryOver | None:
+        """Find a prior output whose magnitude was reused without its reference frame.
+
+        A bare number entering a tool is read in that tool's declared unit and datum.
+        When it also equals a value an earlier tool returned on a different footing, the
+        conversion was almost certainly skipped, which is the arithmetic behind most
+        order-of-magnitude errors in agent transcripts.
+
+        """
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        for entry in self.outputs:
+            prior = entry.quantity
+            if abs(prior.magnitude - float(raw)) > 1e-9 * max(1.0, abs(prior.magnitude)):
+                continue
+            if prior.units == coerced.units:
+                continue
+            try:
+                prior.pint.to(coerced.units)
+            except Exception:
+                continue
+            return CarryOver(entry, "unit")
+        return None
+
     # Auditing --------------------------------------------------------------------------
 
     def audit_answer(self, text: str, tolerance: float = 0.005) -> AnswerAudit:
