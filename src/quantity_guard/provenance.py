@@ -142,11 +142,15 @@ class Session:
             prior = entry.quantity
             if abs(prior.magnitude - float(raw)) > 1e-9 * max(1.0, abs(prior.magnitude)):
                 continue
-            if prior.units == coerced.units:
-                continue
             try:
-                prior.pint.to(coerced.units)
+                converted = prior.pint.to(coerced.units).magnitude
             except Exception:
+                continue
+            # Equal magnitudes are only suspicious when a conversion was actually
+            # required. Aliases of one unit (cms and m**3/s), and values that are
+            # invariant under the conversion such as zero, convert to themselves and
+            # are correct as sent.
+            if abs(converted - prior.magnitude) <= 1e-9 * max(1.0, abs(prior.magnitude)):
                 continue
             return CarryOver(entry, "unit")
         return None
