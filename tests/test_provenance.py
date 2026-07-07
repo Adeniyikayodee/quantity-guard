@@ -83,3 +83,35 @@ def test_a_stated_duration_is_audited():
         observed_discharge("07374000")
         audit = s.audit_answer("The peak arrives within 36 hours.")
     assert [c.text for c in audit.unsourced] == ["36 hours"]
+
+
+def test_carry_over_between_tools_is_refused():
+    from quantity_guard import UnconvertedCarryOver
+
+    @quantity_tool(params={"discharge": {"unit": "m**3/s"}}, returns={"unit": "m**3/s"})
+    def downstream(discharge):
+        return discharge
+
+    with session():
+        observed_discharge("07374000")  # returns 1250 cfs
+        with pytest.raises(UnconvertedCarryOver) as exc:
+            downstream(1250)
+        assert '"unit": "cfs"' in exc.value.message
+        # The same value sent with its unit converts correctly.
+        assert downstream({"value": 1250, "unit": "cfs"}).magnitude == pytest.approx(35.4, rel=1e-2)
+
+
+def test_carry_over_check_does_not_fire_outside_a_session():
+    @quantity_tool(params={"discharge": {"unit": "m**3/s"}})
+    def downstream(discharge):
+        return discharge
+
+    assert downstream(1250).magnitude == 1250
+
+
+def test_derived_values_can_be_registered():
+    with session() as s:
+        observed_discharge("07374000")
+        s.record_derived(Q(17.1, "ft"), note="freeboard")
+        audit = s.audit_answer("Freeboard is 17.1 ft.")
+    assert audit.ok
