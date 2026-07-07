@@ -12,7 +12,8 @@ import functools
 import inspect
 from typing import Any, Callable
 
-from .errors import GuardViolation
+from .errors import GuardViolation, UnconvertedCarryOver
+from .provenance import carry_over_message
 from .provenance import active_session
 from .quantity import Q
 from .spec import Spec
@@ -63,6 +64,8 @@ class GuardedTool:
             if name in bound.arguments:
                 raw = bound.arguments[name]
                 value = spec.coerce(raw, field=name)
+                if session is not None and isinstance(value, Q):
+                    self._reject_carry_over(session, raw, value, name)
                 bound.arguments[name] = value
                 if session is not None and isinstance(value, Q):
                     session.record(self.name, "input", name, value)
@@ -74,6 +77,13 @@ class GuardedTool:
             for name, value in self._iter_quantities(result):
                 session.record(self.name, "output", name, value)
         return result
+
+    @staticmethod
+    def _reject_carry_over(session, raw: Any, value: Q, field: str) -> None:
+        found = session.detect_carry_over(raw, value)
+        if found is None:
+            return
+        raise UnconvertedCarryOver(carry_over_message(raw, value, found), field=field)
 
     def _validate_result(self, result: Any) -> Any:
         if self.returns is None:
