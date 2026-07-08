@@ -211,3 +211,77 @@ about the result looks wrong.
 For tools where no bare number is ever acceptable, `require_explicit_unit` refuses them
 outright rather than relying on the ledger.
 
+## Series
+
+A gage record is a series, not a number, so a quantity holds either. The declarations are
+unchanged; only the magnitude differs. Install with `pip install quantity-guard[arrays]`.
+
+```python
+Q([980.0, 1250.0, 1640.0], "cfs").to("m**3/s")
+# Q([3 values, 27.7513 to 46.4406] m³/s)
+```
+
+Reference metadata applies to the whole series, so a datum shift, a quality flag, or a
+dimensionality refusal behaves exactly as it does for one value. Carry-over detection and
+the answer audit both compare a single magnitude, so a series is recorded in the ledger
+and in the manifest but is never matched against; `Session.scalar_outputs` is what those
+checks read.
+
+## Tool definitions for your framework
+
+The library's own schema is MCP-shaped. The same declarations are emitted in the OpenAI
+and Anthropic tool formats, with the physical metadata riding along in the parameter
+schemas, since both providers pass unknown keys through to the model.
+
+```python
+from quantity_guard import toolbox
+
+box = toolbox([runoff_depth])
+box.schemas("openai")      # [{"type": "function", "function": {...}}]
+box.schemas("anthropic")   # [{"name": ..., "input_schema": {...}}]
+
+payload = box.invoke("runoff_depth", {"discharge": "1250 cfs", "area": 29000})
+box.result_message("openai", call_id, payload)
+```
+
+A rejected call comes back as an error result rather than an exception, so the repair text
+reaches the model instead of the process.
+
+## Measuring before enforcing
+
+`enforcement="warn"` validates without rejecting: the call proceeds on the raw value, and
+the violation is recorded. It exists so a team can find out what enforcement would cost
+before paying it.
+
+```python
+with session() as ledger:
+    ...
+    print(ledger.enforcement_report())
+```
+
+```
+2 of 3 tool calls would have been blocked:
+  2x dimensionality_error
+      runoff.discharge: expected a quantity in m**3/s ([length]^3 [time]^-1),
+      received 12.4 ft ([length]); these are different physical quantities
+```
+
+## Record quality
+
+Quality flags propagate through arithmetic, taking the weakest input, so a result
+computed from provisional record is itself marked provisional. USGS single-letter codes
+are accepted directly.
+
+```python
+Q(1250, "cfs", quality="P") + Q(90, "cfs", quality="A")
+# Q(1340 cfs (provisional))
+```
+
+A tool may set a floor, in which case input below it is refused:
+
+```python
+@quantity_tool(params={"discharge": {"unit": "m**3/s", "quality": "approved"}})
+def publish_annual_summary(discharge):
+    ...
+```
+
