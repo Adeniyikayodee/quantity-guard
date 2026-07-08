@@ -14,6 +14,7 @@ from .errors import (
     MissingUnit,
     QualityViolation,
     TimezoneError,
+    UnconvertedCarryOver,
     UnitParseError,
     UnsourcedNumber,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "TimezoneError",
     "QualityViolation",
     "MissingUnit",
+    "UnconvertedCarryOver",
     "UnitParseError",
     "UnsourcedNumber",
 ]
