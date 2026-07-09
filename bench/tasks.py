@@ -55,3 +55,144 @@ class Task:
 
 def _tool(fn: Callable, params: dict[str, Any], returns: Any = None, **kw) -> GuardedTool:
     return GuardedTool(fn, params, returns, **kw)
+
+
+# Tool bodies ----------------------------------------------------------------------------
+
+
+def read_discharge(station: str):
+    """Latest observed discharge at a USGS streamgage."""
+    return Q(DISCHARGE_CFS, "cfs", quality="P", source=f"usgs:{station}")
+
+
+def read_drainage_area(station: str):
+    """Contributing drainage area upstream of a streamgage."""
+    return Q(AREA_KM2, "km**2", source=f"usgs:{station}")
+
+
+def runoff_depth(discharge, area):
+    """Depth-equivalent runoff over the contributing area."""
+    return (discharge / area).to("mm/day")
+
+
+def read_gage_height(station: str):
+    """Latest observed stage, referenced to the station's own local datum."""
+    return Q(GAGE_HEIGHT_FT, "ft", datum=GAGE, quality="P", source=f"usgs:{station}")
+
+
+def read_flood_stage(station: str):
+    """Published flood stage for the site, referenced to NAVD88."""
+    return Q(FLOOD_STAGE_FT, "ft", datum="NAVD88", quality="A", source="nws:ahps")
+
+
+def to_navd88(stage):
+    """Convert a stage on the station datum to an elevation on NAVD88."""
+    return stage.to_datum("NAVD88")
+
+
+def freeboard(stage, flood_stage):
+    """Vertical margin between the water surface and flood stage."""
+    return flood_stage - stage
+
+
+def read_discharge_at(station: str, observed_at: datetime):
+    """Discharge at a given time. Gage records are published in local standard time."""
+    value = HOURLY_CFS.get(observed_at.hour)
+    if value is None:
+        raise ValueError(
+            f"no observation at hour {observed_at.hour}; available hours are "
+            f"{sorted(HOURLY_CFS)} local standard time"
+        )
+    return Q(value, "cfs", quality="P", source=f"usgs:{station}")
+
+
+# Task definitions -----------------------------------------------------------------------
+
+
+def build_tasks(suite: str = "core") -> list[Task]:
+    return CORE()
+
+
+def CORE() -> list[Task]:
+    return [
+        Task(
+            name="runoff_depth",
+            hazard="unit carry-over",
+            prompt=(
+                f"For USGS station {STATION}, compute the depth-equivalent runoff over "
+                f"the contributing drainage area. Report the result in mm/day."
+            ),
+            tools=[
+                _tool(read_discharge, {}, {"unit": "cfs"}),
+                _tool(read_drainage_area, {}, {"unit": "km**2"}),
+                _tool(
+                    runoff_depth,
+                    {
+                        "discharge": {"unit": "m**3/s", "description": "Observed discharge."},
+                        "area": {"unit": "km**2", "description": "Drainage area."},
+                    },
+                    {"unit": "mm/day"},
+                ),
+            ],
+            answer=Q(DISCHARGE_CFS, "cfs").to("m**3/s") / Q(AREA_KM2, "km**2"),
+            notes="Discharge is published in cfs; the computing tool declares m**3/s.",
+        ),
+        Task(
+            name="freeboard",
+            hazard="vertical datum",
+            prompt=(
+                f"For USGS station {STATION}, how much freeboard remains between the "
+                f"current water surface and flood stage? Report the result in feet."
+            ),
+            tools=[
+                _tool(read_gage_height, {}, {"unit": "ft", "datum": GAGE}),
+                _tool(read_flood_stage, {}, {"unit": "ft", "datum": "NAVD88"}),
+                _tool(
+                    to_navd88,
+                    {"stage": {"unit": "ft", "datum": GAGE, "description": "Stage on the station datum."}},
+                    {"unit": "ft", "datum": "NAVD88"},
+                ),
+                _tool(
+                    freeboard,
+                    {
+                        "stage": {"unit": "ft", "datum": "NAVD88", "description": "Water surface elevation."},
+                        "flood_stage": {"unit": "ft", "datum": "NAVD88", "description": "Flood stage elevation."},
+                    },
+                    {"unit": "ft"},
+                ),
+            ],
+            answer=Q(FLOOD_STAGE_FT - (GAGE_HEIGHT_FT + GAGE_DATUM_FT), "ft"),
+            notes="Gage height is on the station datum; flood stage is on NAVD88.",
+        ),
+        Task(
+            name="discharge_at_time",
+            hazard="timezone",
+            prompt=(
+                f"For USGS station {STATION}, what was the discharge at 09:30 on "
+                f"2026-08-14, local standard time at the gage? Report the result in cfs."
+            ),
+            tools=[
+                _tool(
+                    read_discharge_at,
+                    {"observed_at": {"tz": "America/Chicago", "description": "Observation time, local standard time at the gage."}},
+                    {"unit": "cfs"},
+                ),
+            ],
+            answer=Q(HOURLY_CFS[9], "cfs"),
+            notes="A naive timestamp read as UTC lands on a different hour of record.",
+        ),
+        Task(
+            name="unsourced_peak",
+            hazard="provenance",
+            prompt=(
+                f"For USGS station {STATION}, what is the forecast peak discharge "
+                f"expected within the next 36 hours? Report the result in cfs."
+            ),
+            tools=[
+                _tool(read_discharge, {}, {"unit": "cfs"}),
+            ],
+            answer=None,
+            expects_refusal=True,
+            notes="No forecast tool exists; the peak cannot be obtained.",
+        ),
+    ]
