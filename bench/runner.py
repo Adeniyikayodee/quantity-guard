@@ -117,3 +117,122 @@ class OpenRouter:
                 last = exc
                 time.sleep(2 ** attempt + 1)
         raise RuntimeError(f"request failed after retries: {last}")
+
+
+def openai_tools(tools, physical_metadata: bool) -> list[dict]:
+    """Tool definitions in the shape the chat-completions endpoint expects."""
+    out = []
+    for tool in tools:
+        schema = tool.json_schema(physical_metadata=physical_metadata)
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": schema["name"],
+                    "description": schema["description"],
+                    "parameters": schema["inputSchema"],
+                },
+            }
+        )
+    return out
+
+
+def run_one(task: Task, condition: str, client: OpenRouter, replicate: int,
+            max_turns: int = 8) -> RunResult:
+    """Drive one task under one condition to a final answer or a terminal violation."""
+    config = CONDITIONS[condition]
+    tools = [t.clone(config["enforcement"]) for t in task.tools]
+    by_name = {t.name: t for t in tools}
+    schema = openai_tools(tools, config["physical_metadata"])
+
+    result = RunResult(
+        task=task.name, hazard=task.hazard, condition=condition,
+        model=client.model, replicate=replicate, outcome="error", silent_error=False,
+    )
+    messages = [{"role": "system", "content": SYSTEM},
+                {"role": "user", "content": task.prompt}]
+    final_text = ""
+
+    with session() as ledger:
+        try:
+            for _ in range(max_turns):
+                response = client.complete(messages, schema)
+                usage = response.get("usage") or {}
+                result.prompt_tokens += usage.get("prompt_tokens", 0)
+                result.completion_tokens += usage.get("completion_tokens", 0)
+                result.turns += 1
+
+                choice = response["choices"][0]
+                message = choice["message"]
+                messages.append({
+                    "role": "assistant",
+                    "content": message.get("content") or "",
+                    **({"tool_calls": message["tool_calls"]} if message.get("tool_calls") else {}),
+                })
+
+                calls = message.get("tool_calls") or []
+                if not calls:
+                    final_text = message.get("content") or ""
+                    break
+
+                blocked = False
+                for call in calls:
+                    result.tool_calls += 1
+                    name = call["function"]["name"]
+                    try:
+                        args = json.loads(call["function"]["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    tool = by_name.get(name)
+                    if tool is None:
+                        payload = {"isError": True,
+                                   "content": [{"type": "text", "text": f"no tool named {name}"}]}
+                    else:
+                        payload = tool.invoke(args)
+                    result.calls_log.append({"tool": name, "args": args})
+
+                    if payload.get("isError") and payload.get("code"):
+                        result.violations += 1
+                        if not config["repair"]:
+                            blocked = True
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": json.dumps(payload.get("result", payload.get("content"))),
+                    })
+                if blocked:
+                    result.outcome = "blocked"
+                    result.detail = "guard rejected a call and repair was disabled"
+                    return result
+        except Exception as exc:  # network or protocol failure, not a task outcome
+            result.outcome = "error"
+            result.detail = f"{type(exc).__name__}: {exc}"[:300]
+            return result
+
+        audit = ledger.audit_answer(final_text)
+
+    result.audit_unsourced = len(audit.unsourced)
+    result.audit_mislabelled = len(audit.mislabelled)
+    result.audit_derived = len(audit.derived)
+    result.audit_quoted = len(audit.quoted)
+    result.answer_text = final_text[:2000]
+    result.stated = _stated(final_text)
+    grade, detail = score(task, final_text, audit)
+    result.outcome = grade
+    result.detail = detail
+    # A silent error is a wrong *number* delivered with no signal. Declining to answer
+    # is a visible failure and is deliberately excluded.
+    wrong_number = (
+        grade == "wrong" and bool(result.stated)
+        and "unavailable" not in result.stated.lower()
+    )
+    # Enforcement alone, with the answer audit not counted as a detector.
+    result.undetected = wrong_number and result.violations == 0
+    result.silent_error = (
+        grade == "wrong"
+        and result.violations == 0
+        and result.audit_unsourced == 0
+        and result.audit_mislabelled == 0
+    )
+    return result
