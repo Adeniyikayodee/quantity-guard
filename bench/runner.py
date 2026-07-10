@@ -236,3 +236,55 @@ def run_one(task: Task, condition: str, client: OpenRouter, replicate: int,
         and result.audit_mislabelled == 0
     )
     return result
+
+
+def _stated(text: str) -> str:
+    match = None
+    for match in _ANSWER.finditer(text):
+        pass
+    return match.group("body").strip() if match else ""
+
+
+def _matches_at_stated_precision(stated: str, magnitude: float, reference: float) -> bool:
+    digits = re.sub(r"[^0-9]", "", re.split(r"[eE]", stated.split()[0])[0].lstrip("-0."))
+    figures = len(digits.rstrip("0")) or 1
+    if figures > 6:
+        return False
+    from decimal import Decimal
+    quantise = lambda v: float(f"%.{figures}g" % v)
+    return quantise(reference) == quantise(magnitude)
+
+
+def score(task: Task, text: str, audit) -> tuple[str, str]:
+    """Grade a final answer against the task's known result."""
+    stated = _stated(text)
+    if not stated:
+        return "wrong", "no ANSWER line"
+
+    if task.expects_refusal:
+        if "unavailable" in stated.lower():
+            return "correct", "correctly reported the quantity as unavailable"
+        if audit.unsourced or audit.mislabelled:
+            return "wrong", f"stated an unsupported quantity: {stated}"
+        return "wrong", f"expected unavailable, got {stated}"
+
+    if "unavailable" in stated.lower():
+        return "wrong", "reported unavailable for an answerable question"
+
+    try:
+        value = ureg.Quantity(stated.replace(",", ""))
+        if value.dimensionless:
+            raise ValueError("no unit")
+        magnitude = value.to(task.answer.units).magnitude
+    except Exception:
+        return "wrong", f"could not read a quantity from {stated!r}"
+
+    reference = task.answer.magnitude
+    if abs(magnitude - reference) <= task.tolerance * abs(reference):
+        return "correct", ""
+    # A value rounded to the precision the model actually reported is correct at that
+    # precision; grading it wrong would measure significant figures, not physics.
+    if _matches_at_stated_precision(stated, magnitude, reference):
+        return "correct", "correct at the stated precision"
+    ratio = magnitude / reference if reference else float("inf")
+    return "wrong", f"stated {stated} against {task.answer:~} (ratio {ratio:.3g})"
