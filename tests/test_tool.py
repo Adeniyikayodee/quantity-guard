@@ -122,3 +122,8 @@ def test_object_form_serialised_into_a_string_is_accepted():
     payload = json.dumps({"value": 1250.0, "unit": "cfs", "quality": "provisional"})
     result = runoff_depth(payload, "29000 km**2")
     assert result.to("mm/day").magnitude == pytest.approx(0.1054, rel=1e-2)
+
+
+def test_a_string_that_is_not_a_quantity_still_fails():
+    with pytest.raises(Exception):
+        runoff_depth("{not json at all}", 29000)

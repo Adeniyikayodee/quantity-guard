@@ -7,6 +7,7 @@ whatever the model actually sends.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -151,6 +152,15 @@ class Spec:
                 source=value.get("source"),
             )
         if isinstance(value, str):
+            # Models routinely serialise the object form into the string form. Reading it
+            # back is unambiguous and avoids rejecting a call that carried its unit
+            # correctly, just encoded one level deeper than expected.
+            text = value.strip()
+            if text.startswith("{") and text.endswith("}"):
+                try:
+                    return self._to_quantity(json.loads(text), field)
+                except json.JSONDecodeError:
+                    pass
             return Q.parse(value)
         if isinstance(value, (int, float)):
             if self.require_explicit_unit:
