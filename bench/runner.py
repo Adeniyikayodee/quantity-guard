@@ -142,6 +142,21 @@ def openai_tools(tools, physical_metadata: bool) -> list[dict]:
     return out
 
 
+def _plain_result(payload: dict) -> dict:
+    """Strip a result down to its bare magnitude.
+
+    A tool written without this library returns a number, not a value/unit object. The
+    baseline condition has to return one too, or the model is handed the unit it would
+    otherwise have to track itself and the comparison is not against real practice.
+    """
+    if payload.get("isError"):
+        return payload
+    result = payload.get("result")
+    if isinstance(result, dict) and "value" in result:
+        return {**payload, "result": result["value"]}
+    return payload
+
+
 def run_one(task: Task, condition: str, client: OpenRouter, replicate: int,
             max_turns: int = 8) -> RunResult:
     """Drive one task under one condition to a final answer or a terminal violation."""
@@ -194,6 +209,8 @@ def run_one(task: Task, condition: str, client: OpenRouter, replicate: int,
                                    "content": [{"type": "text", "text": f"no tool named {name}"}]}
                     else:
                         payload = tool.invoke(args)
+                        if not config["physical_metadata"]:
+                            payload = _plain_result(payload)
                     result.calls_log.append({"tool": name, "args": args})
 
                     if payload.get("isError") and payload.get("code"):
