@@ -253,6 +253,8 @@ def run_one(task: Task, condition: str, client: OpenRouter, replicate: int,
     result.undetected = wrong_number and result.violations == 0
     result.silent_error = (
         grade == "wrong"
+        and "unavailable" not in result.stated.lower()
+        and bool(result.stated)
         and result.violations == 0
         and result.audit_unsourced == 0
         and result.audit_mislabelled == 0
