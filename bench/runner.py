@@ -20,11 +20,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
+
+import certifi
 
 from quantity_guard import session
 from quantity_guard.registry import ureg
@@ -87,6 +90,8 @@ class OpenRouter:
         self.model = model
         self.api_key = api_key or os.environ["OPENROUTER_API_KEY"]
         self.timeout = timeout
+        # Python installed outside the system keychain has no trust store of its own.
+        self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     def complete(self, messages: list[dict], tools: list[dict]) -> dict:
         payload = {"model": self.model, "messages": messages, "max_tokens": 2048}
@@ -104,7 +109,7 @@ class OpenRouter:
         last: Exception | None = None
         for attempt in range(4):
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                with urllib.request.urlopen(request, timeout=self.timeout, context=self.ssl_context) as response:
                     return json.loads(response.read())
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode()[:400]
