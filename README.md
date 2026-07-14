@@ -285,3 +285,52 @@ def publish_annual_summary(discharge):
     ...
 ```
 
+## Timezones
+
+A parameter declaring `tz` accepts only timezone-aware timestamps, which matters because
+USGS publishes gage records in local standard time while models default to UTC.
+
+```python
+@quantity_tool(params={"observed_at": {"tz": "America/Chicago"}})
+def lookup(observed_at):
+    ...
+
+lookup(observed_at="2026-08-14T09:30:00")
+# TimezoneError: timestamp 2026-08-14T09:30:00 is timezone-naive, and gage records
+# are published in local standard time while models default to UTC
+```
+
+## Provenance and unsourced numbers
+
+Inside a session, guarded tools record every quantity crossing their boundary. Auditing
+an answer then checks each numeric literal in the text against that ledger.
+
+```python
+from quantity_guard import session
+
+with session() as s:
+    peak = forecast_peak_stage(station="07374000")
+    audit = s.audit_answer(
+        "The river is forecast to crest at 17.1 ft of freeboard, "
+        "with a peak discharge of 4200 cfs."
+    )
+
+audit.ok        # False
+audit.unsourced # [NumberClaim(text='4200 cfs', status='unsourced', ...)]
+```
+
+Three verdicts are possible for each number. A value matching a recorded output is
+`sourced`. A value matching nothing is `unsourced`, which is the signature of a figure
+produced without calling the tool. A value whose magnitude matches a recorded output but
+whose stated unit is dimensionally incompatible with it is `unit_mislabelled`, which
+catches a correct number reported in the wrong unit.
+
+Values computed outside a guarded tool can be registered so the audit accepts them:
+
+```python
+s.record_derived(Q(17.1, "ft"), note="freeboard")
+```
+
+`s.manifest()` returns the full ledger, including every quantity, its unit, datum, and
+quality, which is enough to re-run the session and check the numbers independently.
+
