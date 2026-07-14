@@ -174,7 +174,7 @@ def CORE() -> list[Task]:
             tools=[
                 _tool(
                     read_discharge_at,
-                    {"observed_at": {"tz": "America/Chicago", "description": "Observation time, local standard time at the gage."}},
+                    {"observed_at": {"tz": "Etc/GMT+6", "description": "Observation time, local standard time at the gage."}},
                     {"unit": "cfs"},
                 ),
             ],
