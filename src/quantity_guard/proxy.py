@@ -41,3 +41,16 @@ class Upstream(Protocol):
 
 
 # Middleware -----------------------------------------------------------------------------
+
+
+@dataclass
+class GuardedProxy:
+    """Validating middleware around an upstream MCP server."""
+
+    upstream: Upstream
+    annotations: dict[str, ToolAnnotation]
+    ledger: Session | None = None
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        """Upstream tools, re-advertised with their physical types declared."""
+        return [self._enrich(tool) for tool in self.upstream.list_tools()]
