@@ -54,3 +54,35 @@ class GuardedProxy:
     def list_tools(self) -> list[dict[str, Any]]:
         """Upstream tools, re-advertised with their physical types declared."""
         return [self._enrich(tool) for tool in self.upstream.list_tools()]
+
+    def _enrich(self, tool: dict[str, Any]) -> dict[str, Any]:
+        note = self.annotations.get(tool.get("name", ""))
+        if note is None or not note.params:
+            return tool
+        tool = json.loads(json.dumps(tool))
+        schema = tool.setdefault("inputSchema", {"type": "object", "properties": {}})
+        properties = schema.setdefault("properties", {})
+        for name, spec in note.params.items():
+            original = properties.get(name, {})
+            declared = spec.json_schema()
+            # Keep whatever the server already said about the parameter; the declaration
+            # adds the physical type rather than replacing the explanation.
+            existing = original.get("description", "")
+            if existing and existing not in declared.get("description", ""):
+                declared["description"] = f"{existing} {declared.get('description', '')}".strip()
+            properties[name] = declared
+        return tool
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        note = self.annotations.get(name)
+        if note is None:
+            return self.upstream.call_tool(name, arguments)
+        try:
+            forwarded = self._validate(name, note, dict(arguments))
+        except GuardViolation as violation:
+            return {
+                "content": [{"type": "text", "text": violation.repair()}],
+                "isError": True,
+            }
+        result = self.upstream.call_tool(name, forwarded)
+        return self._annotate(name, note, result)
