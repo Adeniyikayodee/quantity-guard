@@ -122,3 +122,27 @@ class GuardedProxy:
             **result,
             "content": [{"type": "text", "text": json.dumps(quantity.as_dict())}],
         }
+
+
+def _read_number(result: dict[str, Any]) -> float | None:
+    """The single number in a tool result, if it holds one."""
+    for block in result.get("content") or []:
+        if block.get("type") != "text":
+            continue
+        text = (block.get("text") or "").strip()
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                return float(text)
+            except ValueError:
+                return None
+        if isinstance(payload, (int, float)) and not isinstance(payload, bool):
+            return float(payload)
+        if isinstance(payload, dict) and isinstance(payload.get("value"), (int, float)):
+            return float(payload["value"])
+        return None
+    return None
+
+
+# Talking to a child server over stdio -----------------------------------------------------
