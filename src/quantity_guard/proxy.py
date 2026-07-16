@@ -86,3 +86,39 @@ class GuardedProxy:
             }
         result = self.upstream.call_tool(name, forwarded)
         return self._annotate(name, note, result)
+
+    def _validate(self, tool: str, note: ToolAnnotation,
+                  arguments: dict[str, Any]) -> dict[str, Any]:
+        """Check each declared argument and rewrite it in the unit upstream expects."""
+        for name, spec in note.params.items():
+            if name not in arguments:
+                continue
+            raw = arguments[name]
+            value = spec.coerce(raw, field=name)
+            if isinstance(value, Q):
+                if self.ledger is not None:
+                    found = self.ledger.detect_carry_over(raw, value)
+                    if found is not None:
+                        raise GuardViolation(
+                            carry_over_message(raw, value, found), field=name)
+                    self.ledger.record(tool, "input", name, value)
+                arguments[name] = value.magnitude
+            elif isinstance(value, datetime):
+                arguments[name] = value.isoformat()
+        return arguments
+
+    def _annotate(self, tool: str, note: ToolAnnotation,
+                  result: dict[str, Any]) -> dict[str, Any]:
+        """Restate a bare numeric result with its unit, and record it."""
+        if note.returns is None or result.get("isError"):
+            return result
+        magnitude = _read_number(result)
+        if magnitude is None:
+            return result
+        quantity = Q(magnitude, note.returns.unit, datum=note.returns.datum)
+        if self.ledger is not None:
+            self.ledger.record(tool, "output", "return", quantity)
+        return {
+            **result,
+            "content": [{"type": "text", "text": json.dumps(quantity.as_dict())}],
+        }
