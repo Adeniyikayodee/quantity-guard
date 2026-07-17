@@ -146,3 +146,133 @@ def _read_number(result: dict[str, Any]) -> float | None:
 
 
 # Talking to a child server over stdio -----------------------------------------------------
+
+
+class StdioUpstream:
+    """An MCP server run as a child process, addressed over newline-delimited JSON-RPC."""
+
+    def __init__(self, command: list[str]):
+        self.process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            text=True, bufsize=1,
+        )
+        self._id = 0
+        self._request("initialize", {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "quantity-guard", "version": "0.1.0"},
+        })
+        self._notify("notifications/initialized", {})
+
+    def _send(self, message: dict[str, Any]) -> None:
+        assert self.process.stdin is not None
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
+    def _notify(self, method: str, params: dict[str, Any]) -> None:
+        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self._id += 1
+        self._send({"jsonrpc": "2.0", "id": self._id, "method": method, "params": params})
+        assert self.process.stdout is not None
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise RuntimeError(f"upstream server closed while awaiting {method}")
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # servers sometimes log to stdout; skip anything unparseable
+            if message.get("id") == self._id:
+                if "error" in message:
+                    raise RuntimeError(f"upstream error on {method}: {message['error']}")
+                return message.get("result", {})
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        return self._request("tools/list", {}).get("tools", [])
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._request("tools/call", {"name": name, "arguments": arguments})
+
+    def close(self) -> None:
+        if self.process.stdin:
+            self.process.stdin.close()
+        self.process.terminate()
+
+
+# Serving ----------------------------------------------------------------------------------
+
+
+def serve_stdio(proxy: GuardedProxy, stdin=None, stdout=None) -> None:
+    """Answer JSON-RPC on stdin, so the proxy is itself an MCP server."""
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+
+    for line in stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        method, request_id = message.get("method"), message.get("id")
+        if request_id is None:
+            continue  # a notification; nothing to answer
+
+        try:
+            result = _dispatch(proxy, method, message.get("params") or {})
+        except Exception as exc:  # a protocol-level failure, not a tool failure
+            reply = {"jsonrpc": "2.0", "id": request_id,
+                     "error": {"code": -32603, "message": str(exc)}}
+        else:
+            reply = {"jsonrpc": "2.0", "id": request_id, "result": result}
+        stdout.write(json.dumps(reply) + "\n")
+        stdout.flush()
+
+
+def _dispatch(proxy: GuardedProxy, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if method == "initialize":
+        return {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "quantity-guard", "version": "0.1.0"},
+        }
+    if method == "ping":
+        return {}
+    if method == "tools/list":
+        return {"tools": proxy.list_tools()}
+    if method == "tools/call":
+        return proxy.call_tool(params.get("name", ""), params.get("arguments") or {})
+    raise ValueError(f"unsupported method: {method}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="quantity-guard-mcp",
+        description="Guard an existing MCP server with declared physical types.",
+    )
+    parser.add_argument("--annotations", required=True,
+                        help="TOML or JSON file declaring units per tool and parameter")
+    parser.add_argument("command", nargs=argparse.REMAINDER,
+                        help="the upstream server command, after --")
+    args = parser.parse_args(argv)
+
+    command = [c for c in args.command if c != "--"]
+    if not command:
+        parser.error("give the upstream server command after --")
+
+    notes = annotations_module.load(args.annotations)
+    upstream = StdioUpstream(command)
+    try:
+        with open_session() as ledger:
+            serve_stdio(GuardedProxy(upstream, notes, ledger))
+    finally:
+        upstream.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
