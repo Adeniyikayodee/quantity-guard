@@ -106,3 +106,85 @@ def test_an_unannotated_tool_is_forwarded_unchanged():
     upstream, proxy = make()
     proxy.call_tool("unannotated", {"x": 3})
     assert upstream.calls[-1] == ("unannotated", {"x": 3})
+
+
+def test_carry_over_is_caught_across_the_proxy():
+    ledger = Session()
+    upstream, proxy = make(ledger)
+    proxy.call_tool("read_discharge", {})  # returns 1250 cfs
+    result = proxy.call_tool("runoff_depth", {"discharge": 1250, "area": 29000})
+    assert result["isError"] is True
+    assert "no conversion was applied" in result["content"][0]["text"]
+    assert len(upstream.calls) == 1
+
+
+def test_the_same_value_sent_with_its_unit_is_accepted():
+    ledger = Session()
+    upstream, proxy = make(ledger)
+    proxy.call_tool("read_discharge", {})
+    result = proxy.call_tool(
+        "runoff_depth", {"discharge": {"value": 1250, "unit": "cfs"}, "area": 29000})
+    assert not result.get("isError")
+    assert upstream.calls[-1][1]["discharge"] == pytest.approx(35.396, rel=1e-3)
+
+
+# Transport ------------------------------------------------------------------------------
+
+
+def test_serve_stdio_answers_the_protocol(tmp_path):
+    import io
+
+    _, proxy = make()
+    requests = "\n".join(json.dumps(m) for m in [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "read_discharge", "arguments": {}}},
+    ])
+    out = io.StringIO()
+    serve_stdio(proxy, stdin=io.StringIO(requests), stdout=out)
+
+    replies = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert [r["id"] for r in replies] == [1, 2, 3]
+    assert replies[0]["result"]["serverInfo"]["name"] == "quantity-guard"
+    assert len(replies[1]["result"]["tools"]) == 3
+    assert json.loads(replies[2]["result"]["content"][0]["text"])["unit"] == "cfs"
+
+
+CHILD_SERVER = '''
+import json, sys
+TOOLS = [{"name": "read_discharge", "description": "d",
+          "inputSchema": {"type": "object", "properties": {}}}]
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    if m.get("id") is None:
+        continue
+    method = m["method"]
+    if method == "initialize":
+        r = {"protocolVersion": "2025-06-18", "capabilities": {},
+             "serverInfo": {"name": "child"}}
+    elif method == "tools/list":
+        r = {"tools": TOOLS}
+    else:
+        r = {"content": [{"type": "text", "text": "1250.0"}]}
+    print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r}), flush=True)
+'''
+
+
+def test_stdio_upstream_drives_a_real_child_process(tmp_path):
+    script = tmp_path / "child_server.py"
+    script.write_text(CHILD_SERVER)
+    upstream = StdioUpstream([sys.executable, str(script)])
+    try:
+        assert [t["name"] for t in upstream.list_tools()] == ["read_discharge"]
+        with session() as ledger:
+            proxy = GuardedProxy(upstream, NOTES, ledger)
+            result = proxy.call_tool("read_discharge", {})
+            assert json.loads(result["content"][0]["text"])["unit"] == "cfs"
+            assert ledger.outputs[-1].quantity.magnitude == pytest.approx(1250.0)
+    finally:
+        upstream.close()
