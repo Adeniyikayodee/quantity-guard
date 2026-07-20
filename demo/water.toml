@@ -1,0 +1,15 @@
+# Physical declarations for demo/usgs_server.py, supplied from outside so the server
+# itself needs no change. Only the tools and parameters named here are guarded.
+
+[tools.read_discharge]
+returns = { unit = "cfs" }
+
+[tools.read_drainage_area]
+returns = { unit = "km**2" }
+
+[tools.runoff_depth]
+returns = { unit = "mm/day" }
+
+[tools.runoff_depth.params]
+discharge = { unit = "m**3/s", description = "Observed discharge." }
+area = { unit = "km**2", description = "Contributing drainage area." }
