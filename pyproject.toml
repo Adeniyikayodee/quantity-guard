@@ -27,3 +27,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
+
+[project.scripts]
+quantity-guard-mcp = "quantity_guard.proxy:main"
