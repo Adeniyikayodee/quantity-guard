@@ -1,0 +1,39 @@
+name: release
+
+# Publishes to PyPI when a version tag is pushed. Authentication is by trusted
+# publishing, so no API token is stored here; the one-time setup is on PyPI under
+# Publishing, naming this repository and the workflow file below.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Add `environment: pypi` here, and the matching environment on PyPI and in the
+  # repository settings, if you want release approval gated.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
