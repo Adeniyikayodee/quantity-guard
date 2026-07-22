@@ -334,3 +334,22 @@ s.record_derived(Q(17.1, "ft"), note="freeboard")
 `s.manifest()` returns the full ledger, including every quantity, its unit, datum, and
 quality, which is enough to re-run the session and check the numbers independently.
 
+## Errors are written for the model
+
+Every violation carries a `repair()` string stating what was wrong and what to send
+instead, and `GuardedTool.invoke()` returns it as an MCP tool error rather than raising,
+so a rejected call stays in the conversation where the model can correct it.
+
+```python
+runoff_depth.invoke({"discharge": {"value": 12.4, "unit": "ft"}, "area": 29000})
+```
+
+```python
+{
+  "isError": True,
+  "content": [{"type": "text", "text": "[dimensionality_error] for `discharge` expected a quantity in m**3/s ..."}],
+  "code": "dimensionality_error",
+  "field": "discharge",
+}
+```
+
