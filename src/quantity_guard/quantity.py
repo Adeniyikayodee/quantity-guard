@@ -16,6 +16,29 @@ from .errors import CRSMismatch, DatumMismatch, DimensionalityError, UnitParseEr
 from .registry import datums as _datums
 from .registry import normalize_quality, ureg, worst_quality
 
+try:  # optional; only needed for series-valued quantities
+    import numpy as _np
+except ModuleNotFoundError:  # pragma: no cover - exercised only without numpy
+    _np = None
+
+
+def _magnitude(value: Any) -> Any:
+    """A scalar float, or an array when the value is a sequence.
+
+    Time series are the normal case in hydrology, so a quantity holds either one number
+    or many. Everything downstream is written against pint, which handles both.
+    """
+    if _np is not None and isinstance(value, _np.ndarray):
+        return value.astype(float)
+    if isinstance(value, (list, tuple)) or hasattr(value, "__array__"):
+        if _np is None:
+            raise UnitParseError(
+                "series-valued quantities need numpy; install quantity-guard[arrays]"
+            )
+        return _np.asarray(value, dtype=float)
+    return float(value)
+
+
 @dataclass(frozen=True)
 class Q:
     """A physical quantity with reference metadata.
@@ -39,7 +62,7 @@ class Q:
             except (pint.errors.UndefinedUnitError, pint.errors.DefinitionSyntaxError) as exc:
                 raise UnitParseError(f"cannot parse unit {self.units!r}: {exc}") from None
             object.__setattr__(self, "units", parsed)
-        object.__setattr__(self, "magnitude", float(self.magnitude))
+        object.__setattr__(self, "magnitude", _magnitude(self.magnitude))
         if self.datum is not None:
             _datums.get(self.datum)
         object.__setattr__(self, "quality", normalize_quality(self.quality))
@@ -60,6 +83,11 @@ class Q:
     @property
     def pint(self) -> pint.Quantity:
         return ureg.Quantity(self.magnitude, self.units)
+
+    @property
+    def is_scalar(self) -> bool:
+        """False when this quantity holds a series rather than a single value."""
+        return _np is None or not isinstance(self.magnitude, _np.ndarray)
 
     @property
     def dimensionality(self):
@@ -206,7 +234,7 @@ class Q:
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "value": self.magnitude,
+            "value": self.magnitude if self.is_scalar else self.magnitude.tolist(),
             "unit": format(self.units, "~"),
         }
         for key in ("datum", "crs", "quality", "source"):
@@ -215,7 +243,11 @@ class Q:
         return payload
 
     def __format__(self, spec: str) -> str:
-        if spec in ("", "~"):
+        if not self.is_scalar:
+            n = self.magnitude.size
+            lo, hi = float(self.magnitude.min()), float(self.magnitude.max())
+            body = f"[{n} values, {lo:g} to {hi:g}] {self.units:~P}"
+        elif spec in ("", "~"):
             body = f"{self.magnitude:g} {self.units:~P}"
         else:
             body = format(self.pint, spec)
