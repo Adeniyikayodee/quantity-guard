@@ -162,6 +162,10 @@ class Spec:
                 except json.JSONDecodeError:
                     pass
             return Q.parse(value)
+        if isinstance(value, (list, tuple)) or hasattr(value, "__array__"):
+            if self.unit is None:
+                raise MissingUnit("no unit declared for this parameter", field=field)
+            return Q(value, self.unit, datum=self.datum)
         if isinstance(value, (int, float)):
             if self.require_explicit_unit:
                 raise MissingUnit(
