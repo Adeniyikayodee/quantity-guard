@@ -30,3 +30,7 @@ classifiers = [
 
 [project.scripts]
 quantity-guard-mcp = "quantity_guard.proxy:main"
+
+[project.optional-dependencies]
+arrays = ["numpy>=1.24"]
+dev = ["pytest>=8.0", "numpy>=1.24"]
