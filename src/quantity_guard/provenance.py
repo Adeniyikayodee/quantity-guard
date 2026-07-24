@@ -127,6 +127,15 @@ class Session:
     def outputs(self) -> list[LedgerEntry]:
         return [e for e in self.entries if e.role in ("output", "derived")]
 
+    @property
+    def scalar_outputs(self) -> list[LedgerEntry]:
+        """Outputs a single number can be compared against.
+
+        Carry-over detection and the answer audit both match one magnitude at a time, so
+        a series-valued output is recorded for the manifest but never matched.
+        """
+        return [e for e in self.outputs if e.quantity.is_scalar]
+
     def detect_carry_over(self, raw: Any, coerced: Q) -> CarryOver | None:
         """Find a prior output whose magnitude was reused without its reference frame.
 
@@ -138,7 +147,9 @@ class Session:
         """
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             return None
-        for entry in self.outputs:
+        if not coerced.is_scalar:
+            return None
+        for entry in self.scalar_outputs:
             prior = entry.quantity
             if abs(prior.magnitude - float(raw)) > 1e-9 * max(1.0, abs(prior.magnitude)):
                 continue
@@ -185,7 +196,7 @@ class Session:
             return NumberClaim(text=text, value=value, unit=unit_token or None, status="ignored")
 
         magnitude_match: LedgerEntry | None = None
-        for entry in self.outputs:
+        for entry in self.scalar_outputs:
             quantity = entry.quantity
             if unit is not None:
                 converted = self._convert(quantity, unit)
