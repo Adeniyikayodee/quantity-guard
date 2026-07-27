@@ -57,3 +57,51 @@ def test_a_bare_series_is_read_in_the_declared_unit():
     """Same contract as a bare number: the schema states the unit, so the list is in it."""
     coerced = Spec(unit="m**3/s").coerce(SERIES, "discharge")
     assert coerced.magnitude[2] == pytest.approx(1640.0)
+
+
+def test_a_series_sent_with_its_unit_is_converted():
+    coerced = Spec(unit="m**3/s").coerce({"value": SERIES, "unit": "cfs"}, "discharge")
+    assert coerced.magnitude[2] == pytest.approx(46.44, rel=1e-3)
+
+
+def test_a_tool_accepts_a_series_and_validates_it():
+    from quantity_guard import DimensionalityError
+
+    @quantity_tool(params={"discharge": {"unit": "m**3/s"}, "area": {"unit": "km**2"}},
+                   returns={"unit": "mm/day"})
+    def runoff(discharge, area):
+        return (discharge / area).to("mm/day")
+
+    result = runoff({"value": SERIES, "unit": "cfs"}, 29000)
+    assert result.magnitude.shape == (4,)
+    with pytest.raises(DimensionalityError):
+        runoff({"value": SERIES, "unit": "ft"}, 29000)
+
+
+def test_a_series_formats_as_a_summary():
+    assert "4 values" in f"{Q(SERIES, 'cfs')}"
+
+
+def test_a_series_serialises_as_a_list():
+    payload = Q(SERIES, "cfs").as_dict()
+    assert payload["value"] == SERIES and payload["unit"] == "cfs"
+
+
+def test_the_ledger_records_a_series_but_never_matches_against_it():
+    """Carry-over compares one magnitude; a series has no single magnitude to compare."""
+
+    @quantity_tool(returns={"unit": "cfs"})
+    def read_series():
+        return Q(SERIES, "cfs")
+
+    @quantity_tool(params={"q": {"unit": "m**3/s"}}, returns={"unit": "m**3/s"})
+    def downstream(q):
+        return q
+
+    with session() as ledger:
+        read_series()
+        assert len(ledger.outputs) == 1
+        assert ledger.scalar_outputs == []
+        # 1250 appears inside the series, but a series is never a carry-over source.
+        assert downstream(1250).magnitude == pytest.approx(1250)
+        assert ledger.manifest()["quantities"][0]["value"] == SERIES
