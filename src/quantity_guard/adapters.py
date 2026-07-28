@@ -80,3 +80,14 @@ class Toolbox:
                 "is_error": bool(payload.get("isError")),
             }
         raise ValueError(f"no result shape for flavour {flavour!r}")
+
+
+def _as_text(payload: dict[str, Any]) -> str:
+    if payload.get("isError"):
+        blocks = payload.get("content") or []
+        return blocks[0].get("text", "") if blocks else "tool failed"
+    return json.dumps(payload.get("result"))
+
+
+def toolbox(tools: Iterable[GuardedTool]) -> Toolbox:
+    return Toolbox(list(tools))
