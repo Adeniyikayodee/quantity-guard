@@ -40,6 +40,16 @@ class LedgerEntry:
 
 
 @dataclass
+class WouldBlock:
+    """A call that ``warn`` enforcement let through and ``strict`` would have rejected."""
+
+    tool: str
+    field: str
+    code: str
+    message: str
+
+
+@dataclass
 class CarryOver:
     """A prior output whose magnitude reappeared without its reference frame."""
 
@@ -110,6 +120,8 @@ class Session:
 
     entries: list[LedgerEntry] = field(default_factory=list)
     calls: int = 0
+    #: Calls a tool in ``warn`` mode let through, which ``strict`` would have rejected.
+    violations: list[WouldBlock] = field(default_factory=list)
     started: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )
@@ -277,6 +289,33 @@ class Session:
         # A rounded restatement of the same value, as in 14.23 written as 14.2.
         decimals = len(str(candidate).split(".")[1]) if "." in str(candidate) else 0
         return round(reference, decimals) == round(candidate, decimals)
+
+    def enforcement_report(self) -> str:
+        """What switching enforcement on would have changed.
+
+        ``warn`` mode exists so a team can measure the cost of enforcement before paying
+        it. This is that measurement: the calls that would have been rejected, grouped by
+        the check that would have rejected them.
+        """
+        if not self.violations:
+            return (
+                f"No calls would have been blocked across {self.calls} tool "
+                f"call{'s' if self.calls != 1 else ''}."
+            )
+        by_code: dict[str, list[WouldBlock]] = {}
+        for entry in self.violations:
+            by_code.setdefault(entry.code, []).append(entry)
+
+        lines = [
+            f"{len(self.violations)} of {self.calls} tool calls would have been blocked:"
+        ]
+        for code, group in sorted(by_code.items(), key=lambda kv: -len(kv[1])):
+            lines.append(f"  {len(group)}x {code}")
+            for entry in group[:3]:
+                lines.append(f"      {entry.tool}.{entry.field}: {entry.message}")
+            if len(group) > 3:
+                lines.append(f"      ... and {len(group) - 3} more")
+        return "\n".join(lines)
 
     # Reproducibility -------------------------------------------------------------------
 
