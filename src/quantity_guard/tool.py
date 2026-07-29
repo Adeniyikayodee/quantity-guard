@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import functools
 import inspect
+from datetime import datetime
 from typing import Any, Callable
 
 from .errors import GuardViolation, UnconvertedCarryOver
-from .provenance import carry_over_message
+from .provenance import WouldBlock, carry_over_message
 from .provenance import active_session
 from .quantity import Q
 from .spec import Spec
@@ -22,6 +23,11 @@ from .spec import Spec
 class GuardedTool:
     """A callable tool with declared physical types."""
 
+    #: ``strict`` rejects a violation, ``warn`` records it and continues on the raw value,
+    #: ``off`` performs no checks. ``warn`` exists so a team can measure what enforcement
+    #: would block before switching it on.
+    ENFORCEMENT = ("strict", "warn", "off")
+
     def __init__(
         self,
         fn: Callable,
@@ -29,10 +35,14 @@ class GuardedTool:
         returns: Any = None,
         name: str | None = None,
         description: str | None = None,
+        enforcement: str = "strict",
     ):
+        if enforcement not in self.ENFORCEMENT:
+            raise ValueError(f"enforcement must be one of {self.ENFORCEMENT}")
         self.fn = fn
         self.name = name or fn.__name__
         self.description = (description or inspect.getdoc(fn) or "").strip()
+        self.enforcement = enforcement
         self.params = {k: Spec.coerce_spec(v) for k, v in params.items()}
         self.returns = self._read_returns(returns)
         self.signature = inspect.signature(fn)
@@ -63,9 +73,7 @@ class GuardedTool:
         for name, spec in self.params.items():
             if name in bound.arguments:
                 raw = bound.arguments[name]
-                value = spec.coerce(raw, field=name)
-                if session is not None and isinstance(value, Q):
-                    self._reject_carry_over(session, raw, value, name)
+                value = self._coerce(spec, raw, name, session)
                 bound.arguments[name] = value
                 if session is not None and isinstance(value, Q):
                     session.record(self.name, "input", name, value)
@@ -78,6 +86,51 @@ class GuardedTool:
                 session.record(self.name, "output", name, value)
         return result
 
+    def _coerce(self, spec: Spec, raw: Any, name: str, session) -> Any:
+        """Validate one argument under the tool's enforcement mode."""
+        if self.enforcement == "off":
+            return self._lenient(spec, raw, name)
+        try:
+            value = spec.coerce(raw, field=name)
+            if session is not None and isinstance(value, Q):
+                self._reject_carry_over(session, raw, value, name)
+        except GuardViolation as violation:
+            if self.enforcement == "strict":
+                raise
+            if session is not None:
+                session.violations.append(
+                    WouldBlock(self.name, name, violation.code, violation.message))
+            return self._lenient(spec, raw, name)
+        return value
+
+    @staticmethod
+    def _lenient(spec: Spec, raw: Any, name: str) -> Any:
+        """Read the argument the way an unguarded tool would, taking the magnitude at
+        face value and trusting the declared unit."""
+        if spec.is_temporal:
+            # An unguarded tool parses whatever timestamp it is handed and reads the
+            # clock fields directly, so a naive value keeps its stated hour and an
+            # offset-bearing one is not shifted into the tool's timezone.
+            if isinstance(raw, str):
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    return raw
+            return raw
+        if not spec.is_physical:
+            return raw
+        if isinstance(raw, Q):
+            return raw
+        magnitude = raw.get("value") if isinstance(raw, dict) else raw
+        if isinstance(magnitude, str):
+            try:
+                magnitude = float(magnitude.split()[0])
+            except (ValueError, IndexError):
+                return raw
+        if not isinstance(magnitude, (int, float)):
+            return raw
+        return Q(magnitude, spec.unit, datum=spec.datum)
+
     @staticmethod
     def _reject_carry_over(session, raw: Any, value: Q, field: str) -> None:
         found = session.detect_carry_over(raw, value)
@@ -86,7 +139,7 @@ class GuardedTool:
         raise UnconvertedCarryOver(carry_over_message(raw, value, found), field=field)
 
     def _validate_result(self, result: Any) -> Any:
-        if self.returns is None:
+        if self.returns is None or self.enforcement == "off":
             return result
         if isinstance(self.returns, Spec):
             return self.returns.coerce(result, field="return")
@@ -110,6 +163,12 @@ class GuardedTool:
             for key, value in result.items():
                 if isinstance(value, Q):
                     yield key, value
+
+    def clone(self, enforcement: str) -> GuardedTool:
+        """The same tool under a different enforcement mode."""
+        return GuardedTool(
+            self.fn, dict(self.params), self.returns, self.name, self.description, enforcement
+        )
 
     def invoke(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Call from an agent, returning an MCP-shaped result rather than raising.
@@ -139,9 +198,12 @@ class GuardedTool:
 
     # Schema ----------------------------------------------------------------------------
 
-    def json_schema(self) -> dict[str, Any]:
+    def json_schema(self, physical_metadata: bool = True) -> dict[str, Any]:
         """Tool definition in MCP shape, carrying the physical metadata extensions.
 
+        Setting ``physical_metadata`` to False emits an ordinary schema with the units
+        left in prose, which is what a tool written without this library looks like to a
+        model. It exists to make the two forms comparable in evaluation.
         """
         required = [
             name
@@ -159,6 +221,10 @@ class GuardedTool:
             if self.signature.parameters[name].kind
             not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
         }
+        if not physical_metadata:
+            properties = {
+                name: self._plain_property(name, prop) for name, prop in properties.items()
+            }
         return {
             "name": self.name,
             "description": self.description,
@@ -170,6 +236,16 @@ class GuardedTool:
             },
         }
 
+    def _plain_property(self, name: str, prop: dict[str, Any]) -> dict[str, Any]:
+        """One parameter as an ordinary schema, with the unit demoted to prose."""
+        spec = self.params.get(name)
+        described = prop.get("description", "")
+        if spec is not None and spec.unit:
+            described = f"{described} In {spec.unit}.".strip()
+        if spec is not None and spec.tz:
+            return {"type": "string", "description": described}
+        return {"type": "number", "description": described}
+
 
 def quantity_tool(
     params: dict[str, Any] | None = None,
@@ -177,6 +253,7 @@ def quantity_tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    enforcement: str = "strict",
 ):
     """Declare the physical types of a tool's parameters and result.
 
@@ -190,6 +267,6 @@ def quantity_tool(
     """
 
     def decorate(fn: Callable) -> GuardedTool:
-        return GuardedTool(fn, params or {}, returns, name, description)
+        return GuardedTool(fn, params or {}, returns, name, description, enforcement)
 
     return decorate
