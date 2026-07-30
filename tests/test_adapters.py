@@ -62,3 +62,57 @@ def test_a_rejected_call_becomes_an_error_result_not_an_exception():
     message = box.result_message("anthropic", "toolu_2", payload)
     assert message["is_error"] is True
     assert "no conversion exists" in message["content"][0]["text"]
+
+
+def test_an_unknown_tool_reports_rather_than_raising():
+    assert toolbox([runoff]).invoke("nope", {})["isError"] is True
+
+
+# warn mode --------------------------------------------------------------------------------
+
+
+def _warn_tool():
+    return GuardedTool(
+        runoff.fn,
+        {"discharge": {"unit": "m**3/s"}, "area": {"unit": "km**2"}},
+        {"unit": "mm/day"},
+        enforcement="warn",
+    )
+
+
+def test_warn_mode_reports_what_enforcement_would_have_blocked():
+    tool = _warn_tool()
+    with session() as ledger:
+        tool("12.4 ft", 29000)
+        tool("3 kg", 29000)
+        tool("1250 cfs", 29000)
+        report = ledger.enforcement_report()
+    assert "2 of 3 tool calls would have been blocked" in report
+    assert "2x dimensionality_error" in report
+    assert len(ledger.violations) == 2
+    assert ledger.violations[0].tool == "runoff"
+
+
+def test_a_clean_session_says_so():
+    tool = _warn_tool()
+    with session() as ledger:
+        tool("1250 cfs", 29000)
+        assert "No calls would have been blocked" in ledger.enforcement_report()
+
+
+def test_warn_mode_still_returns_an_answer():
+    """The point of warn mode is that nothing breaks while you measure."""
+    tool = _warn_tool()
+    with session():
+        assert tool("12.4 ft", 29000) is not None
+
+
+# CRS ---------------------------------------------------------------------------------------
+
+
+def test_a_crs_is_a_consistency_tag_on_a_scalar():
+    """A scalar has no coordinates to reproject, so the CRS is checked, never converted."""
+    a = Q(3.0, "m", crs="EPSG:4326")
+    assert (a + Q(1.0, "m", crs="EPSG:4326")).crs == "EPSG:4326"
+    with pytest.raises(CRSMismatch):
+        a + Q(1.0, "m", crs="EPSG:26915")
