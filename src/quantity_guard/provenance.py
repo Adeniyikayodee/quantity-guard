@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator
@@ -22,11 +23,15 @@ import pint
 from .quantity import Q
 from .registry import ureg
 
-_ACTIVE: list["Session"] = []
+# A ContextVar rather than a module-level list, so concurrent agent runs in the same
+# process keep separate ledgers. Async agents interleave, and a shared stack would
+# attribute one run's tool outputs to another's answer audit.
+_ACTIVE: ContextVar[tuple["Session", ...]] = ContextVar("quantity_guard_sessions", default=())
 
 
 def active_session() -> "Session | None":
-    return _ACTIVE[-1] if _ACTIVE else None
+    stack = _ACTIVE.get()
+    return stack[-1] if stack else None
 
 
 @dataclass
@@ -341,11 +346,11 @@ class Session:
 def session() -> Iterator[Session]:
     """Open a recording scope, within which guarded tools log their quantities."""
     current = Session()
-    _ACTIVE.append(current)
+    token = _ACTIVE.set(_ACTIVE.get() + (current,))
     try:
         yield current
     finally:
-        _ACTIVE.pop()
+        _ACTIVE.reset(token)
 
 
 def carry_over_message(raw: Any, value: Q, found: CarryOver) -> str:
