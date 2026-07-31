@@ -18,7 +18,8 @@ from .errors import (
     UnitParseError,
     UnsourcedNumber,
 )
-from .provenance import AnswerAudit, NumberClaim, Session, session
+from .adapters import Toolbox, schema, toolbox
+from .provenance import AnswerAudit, CarryOver, NumberClaim, Session, WouldBlock, session
 from .quantity import Q
 from .registry import datums, ureg
 from .spec import Spec
@@ -35,6 +36,11 @@ __all__ = [
     "Session",
     "AnswerAudit",
     "NumberClaim",
+    "CarryOver",
+    "WouldBlock",
+    "Toolbox",
+    "toolbox",
+    "schema",
     "datums",
     "ureg",
     "GuardViolation",
