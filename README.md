@@ -353,3 +353,72 @@ runoff_depth.invoke({"discharge": {"value": 12.4, "unit": "ft"}, "area": 29000})
 }
 ```
 
+## Reading real data
+
+`quantity_guard.packs.usgs` retrieves from USGS Water Services and keeps what the service
+already publishes. The API states a unit code on every variable, a qualifier marking the
+record provisional or approved, an explicit UTC offset on each timestamp, and a site record
+giving the gage datum and the reference it is measured from. Clients normally parse the
+number and drop the rest.
+
+```python
+from quantity_guard.packs import usgs
+
+site, values = usgs.reading("07374000")
+values["00060"].value      # Q(234000 ft³/s (provisional))
+values["00065"].value      # Q(7.73 ft (GAGE:07374000, provisional))
+values["00060"].observed_at.utcoffset()   # the offset the service stamped, not a guess
+```
+
+Reading the site record registers the station datum, so a gage height comes back on the
+gage's own reference and differencing it against an absolute elevation is refused rather
+than quietly wrong. Network access goes through a replaceable `fetch`, and the tests run
+against recorded responses; `pytest -m live` checks them against the service.
+
+## Answering where a number came from
+
+The audit issues one of five verdicts per figure. `sourced` matched a recorded output.
+`derived` is a sum or difference of recorded outputs, which is what a model produces when
+it adds a station datum to a stage by hand. `quoted` was repeated back from the question,
+such as a forecast horizon the asker supplied. `unsourced` matched nothing, and
+`unit_mislabelled` matched a magnitude but contradicted its unit. Only the last two make
+`audit.ok` false.
+
+The first two verdicts exist because the audit was measured, not assumed. Across 583
+correct answers from three models it flagged 34% of them, rising to 98% on one task, which
+is an unusable rate for a check meant to be trusted. Every cause turned out to be a
+legitimate number: values the model had derived, values it had quoted back from the
+question, a derived value written without a unit, and a figure rounded from 17.1 to 17.
+Re-running the three worst tasks over 288 fresh transcripts puts the rate at 0%.
+
+| task | before | after |
+|---|---|---|
+| unsourced_peak | 98% | 0% |
+| hard_freeboard | 72% | 0% |
+| freeboard | 31% | 0% |
+
+Derivation follows sums and differences of like dimensions only, and one step deep.
+Allowing products and quotients as well was measured to accept 53% of randomly chosen
+numbers on a six-output ledger, which would leave the audit unable to detect anything.
+With the restriction, a random number is accepted 2.3% of the time on a three-output
+ledger and 6.8% on a six-output one, and a fabricated peak discharge is still caught.
+
+The audit answers provenance, not correctness. A freeboard of 18.6 ft computed as
+31.0 − 12.4 is `derived`, because it genuinely came from two recorded outputs; that it used
+the wrong operation is a physics error, and catching it is the datum check's job at the
+tool boundary.
+
+## Domain packs
+
+`quantity_guard.packs.water` supplies specifications for surface water work, covering
+discharge, gage height, elevation, water temperature, precipitation, and drainage area,
+along with `register_station()` for binding a gage to its local datum.
+
+```python
+from quantity_guard.packs.water import DISCHARGE, GAGE_HEIGHT, station_spec
+
+@quantity_tool(params={"q": DISCHARGE, "stage": station_spec("07374000")})
+def rating_residual(q, stage):
+    ...
+```
+
