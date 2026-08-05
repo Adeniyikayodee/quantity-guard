@@ -70,3 +70,21 @@ class Site:
     drainage_area: Q | None
     timezone: str
     horizontal_crs: str | None
+
+
+def unit_for(code: str) -> str:
+    """A pint unit for a service unit code."""
+    cleaned = code.strip()
+    if cleaned in UNIT_CODES:
+        return UNIT_CODES[cleaned]
+    raise ValueError(
+        f"unmapped USGS unit code {code!r}; add it to quantity_guard.packs.usgs.UNIT_CODES"
+    )
+
+
+def _quality(qualifiers: Iterable[str]) -> str | None:
+    """The weakest qualifier on a reading, as a quality flag."""
+    for code in ("P", "e", "A"):
+        if code in set(qualifiers):
+            return code
+    return None
