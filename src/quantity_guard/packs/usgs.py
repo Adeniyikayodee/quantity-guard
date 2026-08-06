@@ -172,3 +172,10 @@ def instantaneous(number: str, parameters: Iterable[str] = ("00060", "00065"),
             name=variable["variableName"].split(",")[0],
         )
     return readings
+
+
+def reading(number: str, fetch: Fetch | None = None) -> tuple[Site, dict[str, Observation]]:
+    """A site record and its latest values, with the datum already wired up."""
+    record = site(number, fetch=fetch)
+    values = instantaneous(number, fetch=fetch, datum_name=record.datum_name)
+    return record, values
