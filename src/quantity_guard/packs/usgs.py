@@ -88,3 +88,87 @@ def _quality(qualifiers: Iterable[str]) -> str | None:
         if code in set(qualifiers):
             return code
     return None
+
+
+def site(number: str, fetch: Fetch | None = None, register: bool = True) -> Site:
+    """Read a site record, and register its datum so stages carry a real reference."""
+    fetch = fetch or _http
+    query = urllib.parse.urlencode(
+        {"format": "rdb", "sites": number, "siteOutput": "expanded"})
+    rows = [line for line in fetch(f"{SITE_URL}?{query}").splitlines()
+            if line and not line.startswith("#")]
+    header, record = rows[0].split("\t"), rows[2].split("\t")
+    field = dict(zip(header, record))
+
+    altitude = field.get("alt_va", "").strip()
+    altitude_datum = field.get("alt_datum_cd", "").strip() or "NAVD88"
+    area = field.get("drain_area_va", "").strip()
+    zone = field.get("tz_cd", "").strip() or "UTC"
+    datum_name = f"GAGE:{number}"
+
+    gage_datum = None
+    if altitude:
+        if altitude_datum not in datums.datums:
+            datums.register(altitude_datum, description=f"Reported by USGS for {number}")
+        gage_datum = Q(float(altitude), "ft", datum=altitude_datum)
+        if register:
+            if datum_name not in datums.datums:
+                datums.register(datum_name, description=f"Local datum for USGS {number}")
+            if not datums.can_convert(datum_name, altitude_datum):
+                datums.register_offset(datum_name, altitude_datum, gage_datum)
+
+    return Site(
+        number=number,
+        name=field.get("station_nm", "").strip(),
+        datum_name=datum_name,
+        gage_datum=gage_datum,
+        drainage_area=Q(float(area), "mile**2").to("km**2") if area else None,
+        timezone=zone,
+        horizontal_crs=field.get("dec_coord_datum_cd", "").strip() or None,
+    )
+
+
+def instantaneous(number: str, parameters: Iterable[str] = ("00060", "00065"),
+                  fetch: Fetch | None = None,
+                  datum_name: str | None = None) -> dict[str, Observation]:
+    """Latest instantaneous values, as quantities keyed by parameter code.
+
+    ``datum_name`` attaches a registered station datum to stage readings. Call ``site``
+    first to obtain and register one; without it a gage height is returned with no datum,
+    which is honest but leaves it unusable against an absolute elevation.
+    """
+    fetch = fetch or _http
+    query = urllib.parse.urlencode({
+        "format": "json", "sites": number,
+        "parameterCd": ",".join(parameters), "siteStatus": "all",
+    })
+    payload = json.loads(fetch(f"{IV_URL}?{query}"))
+
+    readings: dict[str, Observation] = {}
+    for series in payload["value"]["timeSeries"]:
+        variable = series["variable"]
+        code = variable["variableCode"][0]["value"]
+        points = series["values"][0]["value"]
+        if not points:
+            continue
+        point = points[-1]
+        if point["value"] in ("", "-999999"):
+            continue
+
+        quantity = Q(
+            float(point["value"]),
+            unit_for(variable["unit"]["unitCode"]),
+            quality=_quality(point.get("qualifiers", [])),
+            source=f"usgs:{number}:{code}",
+            # Stage is measured from the station's own zero, not from sea level.
+            datum=datum_name if code == "00065" else None,
+        )
+        readings[code] = Observation(
+            value=quantity,
+            # The service stamps every reading with its own offset, so the timezone is
+            # read from the data rather than assumed for the region.
+            observed_at=datetime.fromisoformat(point["dateTime"]),
+            parameter=code,
+            name=variable["variableName"].split(",")[0],
+        )
+    return readings
