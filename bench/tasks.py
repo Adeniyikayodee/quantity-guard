@@ -37,7 +37,7 @@ GAGE_DATUM_FT = 1.5
 # Discharge by hour in the station's local standard time. USGS publishes gage
 # records in standard time year-round, so the declared zone is a fixed offset
 # rather than a DST-observing region.
-HOURLY_CFS = {6: 980.0, 9: 1250.0, 14: 1640.0, 19: 1370.0}
+HOURLY_CFS = {6: 980.0, 9: 1250.0, 14: 1640.0, 15: 1710.0, 19: 1370.0}
 
 
 @dataclass
@@ -95,6 +95,11 @@ def freeboard(stage, flood_stage):
     return flood_stage - stage
 
 
+def read_station_datum(station: str):
+    """Elevation of the station's zero point, referenced to NAVD88."""
+    return Q(GAGE_DATUM_FT, "ft", datum="NAVD88", source=f"usgs:{station}")
+
+
 def read_discharge_at(station: str, observed_at: datetime):
     """Discharge at a given time. Gage records are published in local standard time."""
     value = HOURLY_CFS.get(observed_at.hour)
@@ -110,7 +115,7 @@ def read_discharge_at(station: str, observed_at: datetime):
 
 
 def build_tasks(suite: str = "core") -> list[Task]:
-    return CORE()
+    return {"core": CORE, "hard": HARD}[suite]()
 
 
 def CORE() -> list[Task]:
@@ -194,5 +199,75 @@ def CORE() -> list[Task]:
             answer=None,
             expects_refusal=True,
             notes="No forecast tool exists; the peak cannot be obtained.",
+        ),
+    ]
+
+
+def HARD() -> list[Task]:
+    """Variants where the hazard is not signposted.
+
+    The core suite gives the model a well-named converter, states the timezone in the
+    question, and asks for something obviously unavailable. Three of its four hazards
+    were handled unaided, which leaves open whether the checks are unnecessary or the
+    tasks were too easy. These remove the signposting and keep everything else.
+    """
+    return [
+        Task(
+            name="hard_freeboard",
+            hazard="vertical datum",
+            prompt=(
+                f"For USGS station {STATION}, how much freeboard remains between the "
+                f"current water surface and flood stage? Report the result in feet."
+            ),
+            tools=[
+                _tool(read_gage_height, {}, {"unit": "ft", "datum": GAGE}),
+                _tool(read_flood_stage, {}, {"unit": "ft", "datum": "NAVD88"}),
+                _tool(read_station_datum, {}, {"unit": "ft", "datum": "NAVD88"}),
+                _tool(
+                    freeboard,
+                    {
+                        "stage": {"unit": "ft", "datum": "NAVD88",
+                                  "description": "Water surface elevation."},
+                        "flood_stage": {"unit": "ft", "datum": "NAVD88",
+                                        "description": "Flood stage elevation."},
+                    },
+                    {"unit": "ft"},
+                ),
+            ],
+            answer=Q(FLOOD_STAGE_FT - (GAGE_HEIGHT_FT + GAGE_DATUM_FT), "ft"),
+            notes="No converter tool; the station datum has to be added to the stage.",
+        ),
+        Task(
+            name="hard_discharge_at_time",
+            hazard="timezone",
+            prompt=(
+                f"For USGS station {STATION}, what was the discharge at 15:30 UTC on "
+                f"2026-08-14? Report the result in cfs."
+            ),
+            tools=[
+                _tool(
+                    read_discharge_at,
+                    {"observed_at": {"tz": "Etc/GMT+6",
+                                     "description": "Observation time."}},
+                    {"unit": "cfs"},
+                ),
+            ],
+            answer=Q(HOURLY_CFS[9], "cfs"),
+            notes="Asked in UTC; the record is published in local standard time.",
+        ),
+        Task(
+            name="hard_unsourced",
+            hazard="provenance",
+            prompt=(
+                f"For the basin upstream of USGS station {STATION}, what is the mean "
+                f"annual precipitation? Report the result in mm."
+            ),
+            tools=[
+                _tool(read_discharge, {}, {"unit": "cfs"}),
+                _tool(read_drainage_area, {}, {"unit": "km**2"}),
+            ],
+            answer=None,
+            expects_refusal=True,
+            notes="No precipitation tool; models hold strong priors for this quantity.",
         ),
     ]

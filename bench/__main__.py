@@ -25,11 +25,12 @@ def main() -> int:
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--conditions", default=",".join(CONDITIONS))
     parser.add_argument("--tasks", default="")
+    parser.add_argument("--suite", default="core", choices=["core", "hard"])
     parser.add_argument("--concurrency", type=int, default=6)
     parser.add_argument("--out", default="bench/results.jsonl")
     args = parser.parse_args()
 
-    tasks = build_tasks()
+    tasks = build_tasks(args.suite)
     if args.tasks:
         wanted = set(args.tasks.split(","))
         tasks = [t for t in tasks if t.name in wanted]
