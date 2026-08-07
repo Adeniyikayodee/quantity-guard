@@ -73,3 +73,40 @@ def test_a_stage_cannot_be_differenced_against_an_absolute_elevation():
     _, values = usgs.reading(SITE, fetch=fetch)
     with pytest.raises(DatumMismatch):
         Q(31.0, "ft", datum="NAVD88") - values["00065"].value
+
+
+def test_the_registered_offset_makes_the_comparison_legal():
+    _, values = usgs.reading(SITE, fetch=fetch)
+    stage = values["00065"].value.to_datum("NAVD88")
+    assert (Q(31.0, "ft", datum="NAVD88") - stage).magnitude == pytest.approx(23.27)
+
+
+# Unit codes -------------------------------------------------------------------------------
+
+
+def test_service_unit_codes_map_to_pint():
+    assert usgs.unit_for("ft3/s") == "foot**3/second"
+    assert Q(1.0, usgs.unit_for("ft3/s")).to("cfs").magnitude == pytest.approx(1.0)
+
+
+def test_an_unmapped_code_says_so_rather_than_guessing():
+    with pytest.raises(ValueError, match="unmapped USGS unit code"):
+        usgs.unit_for("furlongs/fortnight")
+
+
+@pytest.mark.parametrize("qualifiers,expected", [
+    (["P"], "provisional"), (["A"], "approved"), (["A", "e"], "estimated"), ([], None),
+])
+def test_qualifiers_become_quality_flags(qualifiers, expected):
+    assert Q(1.0, "ft", quality=usgs._quality(qualifiers)).quality == expected
+
+
+# Live service -----------------------------------------------------------------------------
+
+
+@pytest.mark.live
+def test_against_the_live_service():
+    """Run with -m live to check the recorded fixtures still match the real shape."""
+    record, values = usgs.reading(SITE)
+    assert record.name
+    assert values["00060"].value.dimensionality == Q(1, "cfs").dimensionality
