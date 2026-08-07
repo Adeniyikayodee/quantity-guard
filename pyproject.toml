@@ -34,3 +34,15 @@ quantity-guard-mcp = "quantity_guard.proxy:main"
 [project.optional-dependencies]
 arrays = ["numpy>=1.24"]
 dev = ["pytest>=8.0", "numpy>=1.24"]
+
+[project.urls]
+Homepage = "https://github.com/Adeniyikayodee/quantity-guard"
+Issues = "https://github.com/Adeniyikayodee/quantity-guard/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quantity_guard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = ["live: hits the USGS service; excluded by default"]
