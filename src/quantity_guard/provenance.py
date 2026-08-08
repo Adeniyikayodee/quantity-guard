@@ -161,6 +161,9 @@ class Session:
         conversion was almost certainly skipped, which is the arithmetic behind most
         order-of-magnitude errors in agent transcripts.
 
+        Two frames are checked. A dropped unit gives a wrong answer by some ratio, and a
+        dropped datum gives a wrong answer by an offset, which is the harder of the two
+        to notice because the result stays plausible.
         """
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             return None
@@ -170,6 +173,10 @@ class Session:
             prior = entry.quantity
             if abs(prior.magnitude - float(raw)) > 1e-9 * max(1.0, abs(prior.magnitude)):
                 continue
+            # A datum is only dropped if this parameter declares one to drop it against.
+            if (coerced.datum is not None and prior.datum is not None
+                    and prior.datum != coerced.datum):
+                return CarryOver(entry, "datum")
             try:
                 converted = prior.pint.to(coerced.units).magnitude
             except Exception:
@@ -354,9 +361,18 @@ def session() -> Iterator[Session]:
 
 
 def carry_over_message(raw: Any, value: Q, found: CarryOver) -> str:
-    """Explain a dropped unit in terms the model can act on."""
+    """Explain a dropped reference frame in terms the model can act on."""
     prior, entry = found.entry.quantity, found.entry
     source = f"{entry.tool}.{entry.field}"
+    if found.reason == "datum":
+        return (
+            f"received the bare number {raw:g}, which this parameter reads as "
+            f"{value.magnitude:g} {value.units:~P} on {value.datum}, but {source} "
+            f"returned it on {prior.datum}. These are measured from different "
+            f"references, so the "
+            f"magnitude cannot be reused; convert it to {value.datum} first, or resend "
+            f'it as {{"value": {raw:g}, "datum": "{prior.datum}"}}'
+        )
     return (
         f"received the bare number {raw:g}, which this tool reads as {value:~}, but "
         f"{source} returned {prior:~} and no conversion was applied; resend the value "
