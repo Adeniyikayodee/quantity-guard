@@ -115,3 +115,20 @@ def test_derived_values_can_be_registered():
         s.record_derived(Q(17.1, "ft"), note="freeboard")
         audit = s.audit_answer("Freeboard is 17.1 ft.")
     assert audit.ok
+
+
+def test_manifest_captures_units_and_quality():
+    with session() as s:
+        observed_discharge("07374000")
+        manifest = s.manifest()
+    entry = manifest["quantities"][-1]
+    assert entry["unit"] == "cfs"
+    assert entry["quality"] == "provisional"
+    assert manifest["calls"] == 1
+
+
+def test_station_registration_enables_a_datum_shift():
+    name = register_station("TESTSTN", Q(1.5, "ft", datum="NAVD88"))
+    assert name == "GAGE:TESTSTN"
+    stage = Q(12.4, "ft", datum=name)
+    assert stage.to_datum("NAVD88").magnitude == pytest.approx(13.9)
