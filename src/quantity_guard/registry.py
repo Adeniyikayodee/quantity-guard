@@ -22,6 +22,10 @@ _EXTRA_UNITS = [
     "cms = meter ** 3 / second",
     "mgd = 1e6 * gallon / day",
     "sfd = foot ** 3 / second * day",
+    # Apparent and reactive power share watt dimensions but are named apart
+    # in power engineering, and the distinction has to survive a round trip.
+    "VA = volt * ampere",
+    "var = volt * ampere",
 ]
 
 for _defn in _EXTRA_UNITS:
@@ -83,3 +87,65 @@ class Datum:
     name: str
     kind: str = "vertical"
     description: str = ""
+
+
+@dataclass
+class DatumRegistry:
+    datums: dict[str, Datum] = field(default_factory=dict)
+    # (from, to) -> offset in metres, defined so that value_to = value_from + offset
+    _offsets: dict[tuple[str, str], float] = field(default_factory=dict)
+
+    def register(self, name: str, kind: str = "vertical", description: str = "") -> Datum:
+        datum = Datum(name=name, kind=kind, description=description)
+        self.datums[name] = datum
+        return datum
+
+    def get(self, name: str) -> Datum:
+        if name not in self.datums:
+            raise DatumMismatch(
+                f"unknown datum {name!r}, register it with `datums.register({name!r})` "
+                f"or use one of {sorted(self.datums) or '(none registered)'}"
+            )
+        return self.datums[name]
+
+    def register_offset(self, from_datum: str, to_datum: str, offset) -> None:
+        """Declare that ``value_to = value_from + offset``.
+
+        Offsets are explicit and local by design, since a gage datum offset is valid at
+        one station, and a VERTCON offset is valid at one point, so nothing here is
+        inferred from context.
+        """
+        self.get(from_datum)
+        self.get(to_datum)
+        metres = float(offset.to("meter").magnitude) if hasattr(offset, "to") else float(offset)
+        self._offsets[(from_datum, to_datum)] = metres
+        self._offsets[(to_datum, from_datum)] = -metres
+
+    def offset_metres(self, from_datum: str, to_datum: str) -> float:
+        if from_datum == to_datum:
+            return 0.0
+        try:
+            return self._offsets[(from_datum, to_datum)]
+        except KeyError:
+            raise DatumConversionUnavailable(
+                f"no registered offset from {from_datum!r} to {to_datum!r}. This "
+                f"conversion depends on location and will not be guessed, so obtain the "
+                f"local offset (VERTCON for NAVD88 and NGVD29, the published station "
+                f"datum for a gage) and register it with "
+                f"`datums.register_offset({from_datum!r}, {to_datum!r}, offset)`",
+                from_datum=from_datum,
+                to_datum=to_datum,
+            ) from None
+
+    def can_convert(self, from_datum: str, to_datum: str) -> bool:
+        return from_datum == to_datum or (from_datum, to_datum) in self._offsets
+
+
+datums = DatumRegistry()
+
+# Vertical datums in common use in US water work.
+datums.register("NAVD88", description="North American Vertical Datum of 1988")
+datums.register("NGVD29", description="National Geodetic Vertical Datum of 1929")
+datums.register("GAGE", description="Local gage datum, station-specific offset required")
+datums.register("MSL", description="Mean sea level, station-dependent")
+datums.register("MLLW", description="Mean lower low water")
