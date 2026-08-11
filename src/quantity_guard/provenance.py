@@ -69,7 +69,8 @@ class NumberClaim:
     text: str
     value: float
     unit: str | None
-    status: str  # "sourced", "unsourced", "unit_mislabelled", or "ignored"
+    #: "sourced", "derived", "quoted", "unsourced", "unit_mislabelled", or "ignored"
+    status: str
     matched: LedgerEntry | None = None
     detail: str = ""
 
@@ -86,13 +87,29 @@ class AnswerAudit:
     def mislabelled(self) -> list[NumberClaim]:
         return [c for c in self.claims if c.status == "unit_mislabelled"]
 
+    @property
+    def derived(self) -> list[NumberClaim]:
+        """Traceable to an arithmetic combination of recorded outputs."""
+        return [c for c in self.claims if c.status == "derived"]
+
+    @property
+    def quoted(self) -> list[NumberClaim]:
+        """Repeated back from the question rather than asserted as a measurement."""
+        return [c for c in self.claims if c.status == "quoted"]
+
+    @property
+    def ok(self) -> bool:
+        return not self.unsourced and not self.mislabelled
+
     def report(self) -> str:
         lines = []
         for claim in self.claims:
             if claim.status == "ignored":
                 continue
-            mark = {"sourced": "ok", "unsourced": "UNSOURCED",
-                    "unit_mislabelled": "MISLABELLED"}[claim.status]
+            mark = {
+                "sourced": "ok", "derived": "derived", "quoted": "quoted",
+                "unsourced": "UNSOURCED", "unit_mislabelled": "MISLABELLED",
+            }[claim.status]
             lines.append(f"  [{mark}] {claim.text}  {claim.detail}")
         return "\n".join(lines) or "  (no numeric claims found)"
 
@@ -192,18 +209,57 @@ class Session:
 
     # Auditing --------------------------------------------------------------------------
 
-    def audit_answer(self, text: str, tolerance: float = 0.005) -> AnswerAudit:
+    def audit_answer(self, text: str, tolerance: float = 0.005,
+                     context: str = "") -> AnswerAudit:
         """Check every numeric literal in ``text`` against recorded tool outputs.
+
+        ``context`` is the question the answer responds to. Numbers repeated back from it
+        are quoted rather than asserted, and flagging them as unsupported measurements is
+        noise: a horizon of "36 hours" came from the asker, not from the model.
         """
+        quoted = {float(m.group("num").replace(",", ""))
+                  for m in _NUMBER.finditer(context)} if context else set()
+        derived = self._derivable()
         claims = [
-            self._judge(match, tolerance)
+            self._judge(match, tolerance, quoted, derived)
             for match in _NUMBER.finditer(text)
         ]
         return AnswerAudit(claims=[c for c in claims if c is not None])
 
-    def _judge(self, match: re.Match, tolerance: float) -> NumberClaim | None:
+    def _derivable(self, depth: int = 2, cap: int = 2000) -> list[Any]:
+        """Quantities reachable by adding or subtracting recorded outputs.
+
+        A model that adds a station datum to a stage, or differences two elevations, is
+        reporting a traceable number even though no tool returned it.
+
+        Physical legality is the tool boundary's concern, so the arithmetic here ignores
+        datums and works on raw magnitudes.
+        """
+        base = [e.quantity.pint for e in self.scalar_outputs][:12]
+        reached: list[Any] = list(base)
+        for _ in range(depth):
+            fresh: list[Any] = []
+            for left in reached:
+                for right in base:
+                    if len(reached) + len(fresh) > cap:
+                        break
+                    try:
+                        fresh.append(left + right)
+                        fresh.append(left - right)
+                        fresh.append(left * right)
+                        fresh.append(left / right)
+                    except Exception:
+                        continue
+            reached += fresh
+        return reached
+
+    def _judge(self, match: re.Match, tolerance: float,
+               quoted: set[float] | None = None,
+               derived: list[Any] | None = None) -> NumberClaim | None:
         raw = match.group("num")
         value = float(raw.replace(",", ""))
+        written = raw.split(".")[1] if "." in raw else ""
+        decimals = len(written)
         unit_token = (match.group("unit") or "").strip()
         if unit_token.lower() in _NOT_UNITS:
             unit_token = ""
@@ -224,12 +280,12 @@ class Session:
             quantity = entry.quantity
             if unit is not None:
                 converted = self._convert(quantity, unit)
-                if converted is not None and self._close(value, converted, tolerance):
+                if converted is not None and self._close(value, converted, tolerance, decimals):
                     return NumberClaim(
                         text=text, value=value, unit=unit_token, status="sourced", matched=entry,
                         detail=f"from {entry.tool}.{entry.field}",
                     )
-            if self._close(value, quantity.magnitude, tolerance):
+            if self._close(value, quantity.magnitude, tolerance, decimals):
                 magnitude_match = magnitude_match or entry
                 if unit is None:
                     return NumberClaim(
@@ -247,6 +303,25 @@ class Session:
                     f"but that value is in {native}, not {unit_token}"
                 ),
             )
+
+        if quoted and any(self._close(value, q, tolerance, decimals) for q in quoted):
+            return NumberClaim(
+                text=text, value=value, unit=unit_token or None, status="quoted",
+                detail="repeated back from the question",
+            )
+
+        for candidate in derived or []:
+            magnitude = candidate.magnitude
+            if unit is not None:
+                try:
+                    magnitude = candidate.to(unit).magnitude
+                except Exception:
+                    continue
+            if self._close(value, magnitude, min(tolerance, 0.001), decimals):
+                return NumberClaim(
+                    text=text, value=value, unit=unit_token or None, status="derived",
+                    detail="an arithmetic combination of recorded outputs",
+                )
 
         return NumberClaim(
             text=text, value=value, unit=unit_token or None, status="unsourced",
@@ -293,13 +368,17 @@ class Session:
             return None
 
     @staticmethod
-    def _close(candidate: float, reference: float, tolerance: float) -> bool:
+    def _close(candidate: float, reference: float, tolerance: float,
+               decimals: int | None = None) -> bool:
         if reference == 0:
             return abs(candidate) < 1e-12
         if abs(candidate - reference) / abs(reference) <= tolerance:
             return True
-        # A rounded restatement of the same value, as in 14.23 written as 14.2.
-        decimals = len(str(candidate).split(".")[1]) if "." in str(candidate) else 0
+        # A rounded restatement of the same value, as in 14.23 written as 14.2, or 17.1
+        # written as 17. The precision is taken from the literal as written, since the
+        # repr of the parsed float implies a precision the author did not state.
+        if decimals is None:
+            decimals = len(str(candidate).split(".")[1]) if "." in str(candidate) else 0
         return round(reference, decimals) == round(candidate, decimals)
 
     def enforcement_report(self) -> str:
