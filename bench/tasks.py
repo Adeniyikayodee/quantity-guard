@@ -115,7 +115,7 @@ def read_discharge_at(station: str, observed_at: datetime):
 
 
 def build_tasks(suite: str = "core") -> list[Task]:
-    return {"core": CORE, "hard": HARD}[suite]()
+    return {"core": CORE, "hard": HARD, "grid": GRID}[suite]()
 
 
 def CORE() -> list[Task]:
@@ -269,5 +269,98 @@ def HARD() -> list[Task]:
             answer=None,
             expects_refusal=True,
             notes="No precipitation tool; models hold strong priors for this quantity.",
+        ),
+    ]
+
+
+# Power systems ---------------------------------------------------------------------------
+#
+# The horizontal claim is that this hazard is not about water. These mirror the hydrology
+# tasks in a domain with its own conventions, so the same carry-over can be looked for
+# where the units, the prose, and the plausible magnitudes are all different. The failure
+# being reproduced is the one documented in the Grid-Mind agent paper, where a model
+# reported 127 MW against a verified 3.9 MW.
+
+PLANT_MW = 3.9
+HOURS = 6.0
+LINE_KV = 138.0
+LOAD_MVA = 42.0
+
+
+def read_plant_output(plant: str):
+    """Current real power output of a generating unit, in MW."""
+    return Q(PLANT_MW, "MW", quality="A", source=f"scada:{plant}")
+
+
+def read_dispatch_window(plant: str):
+    """Length of the current dispatch window, in hours."""
+    return Q(HOURS, "hour", source=f"scada:{plant}")
+
+
+def energy_delivered(power, duration):
+    """Energy delivered by a unit running at a given power for a given time."""
+    return (power * duration).to("MWh")
+
+
+def read_line_voltage(line: str):
+    """Nominal line-to-line voltage of a transmission circuit, in kV."""
+    return Q(LINE_KV, "kV", source=f"ems:{line}")
+
+
+def read_apparent_power(line: str):
+    """Apparent power flowing on a circuit, in MVA."""
+    return Q(LOAD_MVA, "MVA", quality="A", source=f"ems:{line}")
+
+
+def line_current(apparent_power, voltage):
+    """Three-phase line current from apparent power and line-to-line voltage."""
+    return (apparent_power / (voltage * 3 ** 0.5)).to("ampere")
+
+
+def GRID() -> list[Task]:
+    return [
+        Task(
+            name="grid_energy",
+            hazard="unit carry-over",
+            prompt=(
+                "For generating unit UNIT-4, how much energy is delivered over the "
+                "current dispatch window at the present output? Report the result in MWh."
+            ),
+            tools=[
+                _tool(read_plant_output, {}, {"unit": "MW"}),
+                _tool(read_dispatch_window, {}, {"unit": "hour"}),
+                _tool(
+                    energy_delivered,
+                    {
+                        "power": {"unit": "W", "description": "Real power output."},
+                        "duration": {"unit": "s", "description": "Length of the window."},
+                    },
+                    {"unit": "MWh"},
+                ),
+            ],
+            answer=Q(PLANT_MW * HOURS, "MWh"),
+            notes="Output is published in MW and hours; the computing tool declares W and s.",
+        ),
+        Task(
+            name="grid_current",
+            hazard="unit carry-over",
+            prompt=(
+                "For circuit LINE-7, what is the line current at the present loading? "
+                "Report the result in amperes."
+            ),
+            tools=[
+                _tool(read_apparent_power, {}, {"unit": "MVA"}),
+                _tool(read_line_voltage, {}, {"unit": "kV"}),
+                _tool(
+                    line_current,
+                    {
+                        "apparent_power": {"unit": "VA", "description": "Apparent power."},
+                        "voltage": {"unit": "V", "description": "Line-to-line voltage."},
+                    },
+                    {"unit": "ampere"},
+                ),
+            ],
+            answer=Q(LOAD_MVA * 1e6 / (LINE_KV * 1e3 * 3 ** 0.5), "ampere"),
+            notes="Both readings are published in engineering multiples of the base unit.",
         ),
     ]
