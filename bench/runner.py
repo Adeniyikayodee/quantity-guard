@@ -232,7 +232,7 @@ def run_one(task: Task, condition: str, client: OpenRouter, replicate: int,
             result.detail = f"{type(exc).__name__}: {exc}"[:300]
             return result
 
-        audit = ledger.audit_answer(final_text)
+        audit = ledger.audit_answer(final_text, context=task.prompt)
 
     result.audit_unsourced = len(audit.unsourced)
     result.audit_mislabelled = len(audit.mislabelled)
