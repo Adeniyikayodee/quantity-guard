@@ -132,3 +132,49 @@ def test_station_registration_enables_a_datum_shift():
     assert name == "GAGE:TESTSTN"
     stage = Q(12.4, "ft", datum=name)
     assert stage.to_datum("NAVD88").magnitude == pytest.approx(13.9)
+
+
+def test_station_spec_binds_the_local_datum():
+    register_station("TESTSTN2", Q(2.0, "ft", datum="NAVD88"))
+    spec = station_spec("TESTSTN2")
+    assert spec.datum == "GAGE:TESTSTN2"
+    assert spec.coerce(12.4, "stage").datum == "GAGE:TESTSTN2"
+
+
+def test_a_dropped_datum_is_caught_like_a_dropped_unit():
+    """The magnitude is right and the unit is right; only the reference is wrong."""
+    from quantity_guard import UnconvertedCarryOver
+
+    datums.register("GAGE:DROP")
+    datums.register_offset("GAGE:DROP", "NAVD88", Q(1.5, "ft"))
+
+    @quantity_tool(returns={"unit": "ft", "datum": "GAGE:DROP"})
+    def read_stage():
+        return Q(12.4, "ft", datum="GAGE:DROP")
+
+    @quantity_tool(params={"stage": {"unit": "ft", "datum": "NAVD88"}}, returns={"unit": "ft"})
+    def elevation(stage):
+        return stage
+
+    with session():
+        read_stage()
+        with pytest.raises(UnconvertedCarryOver) as exc:
+            elevation(12.4)
+        assert "different references" in exc.value.message
+        # Shifting it first is accepted.
+        assert elevation(Q(12.4, "ft", datum="GAGE:DROP").to_datum("NAVD88")).magnitude == \
+            pytest.approx(13.9)
+
+
+def test_a_matching_magnitude_on_the_same_datum_is_not_flagged():
+    @quantity_tool(returns={"unit": "ft", "datum": "NAVD88"})
+    def read_flood():
+        return Q(31.0, "ft", datum="NAVD88")
+
+    @quantity_tool(params={"stage": {"unit": "ft", "datum": "NAVD88"}}, returns={"unit": "ft"})
+    def elevation(stage):
+        return stage
+
+    with session():
+        read_flood()
+        assert elevation(31.0).magnitude == pytest.approx(31.0)
