@@ -422,3 +422,121 @@ def rating_residual(q, stage):
     ...
 ```
 
+## Demo
+
+`demo/flood_stage.py` replays three failure modes observed in agent transcripts, first
+against unguarded tools and then against guarded ones. It runs offline with no API key.
+
+```bash
+python demo/flood_stage.py
+```
+
+## Measured effect
+
+`bench/` contains a reproducible evaluation of whether any of this changes outcomes. Four
+hydrology tasks, one per hazard, are run under four conditions that hold the tool bodies
+constant and vary only the schema shown to the model and whether validation is enforced.
+384 runs, eight replicates per cell, across three models.
+
+```bash
+python -m bench --model anthropic/claude-opus-5 --replicates 8
+```
+
+The discriminating task asks for depth-equivalent runoff. A retrieval tool publishes
+discharge in cfs, and the computing tool declares m3/s, so the magnitude has to be
+converted on the way between them. Counts are runs in which the model skipped the
+conversion, producing an answer 35.3 times too large.
+
+| model | baseline | schema only | guarded | guarded + repair |
+|---|---|---|---|---|
+| Claude Haiku 4.5 | 8/8 | 2/8 | 0/8 | 0/8 |
+| Claude Sonnet 4.6 | 8/8 | 3/8 | 0/8 | 0/8 |
+| Claude Opus 5 | 8/8 | 1/8 | 0/8 | 0/8 |
+
+Every model made the error on every baseline run, where the tool returns a bare number as
+an ordinary float-based tool does. Capability does not protect against it: the frontier
+model fails exactly as reliably as the smallest one, because the mistake is not one of
+reasoning but of a unit that was never represented.
+
+Declaring the unit in the schema removes most but not all of it, and does not order by
+capability. Enforcement removes it entirely. Task accuracy across all four tasks moves
+from 72-75% at baseline, to 91-97% with the schema alone, to 100% enforced.
+
+Enforcement and the answer audit are separately useful. Counting only enforcement as a
+detector, 25-28% of baseline runs end in an undetected wrong number. The audit, which
+needs no enforcement and only a recording session, independently flagged 8 of 8 of those
+for Sonnet and Opus and 4 of 9 for Haiku.
+
+Three of the four hazards did not discriminate on that suite. The models called the datum
+converter and sent a correct UTC offset without prompting, and correctly reported a value
+as unavailable when no tool could supply it. That left open whether those checks are
+unnecessary or the tasks were signposted, so `--suite hard` removes the signposting: the
+datum task has no converter tool, the timezone question is asked in UTC against a record
+published in local standard time, and the unavailable quantity is one models hold strong
+priors about. 269 further runs:
+
+| hazard | baseline | schema only | guarded | guarded + repair |
+|---|---|---|---|---|
+| timezone | 20/24 | 14/24 | 2/24 | 3/24 |
+| vertical datum | 0/24 | 0/24 | 0/24 | 0/24 |
+| provenance | 0/24 | 0/21 | 0/16 | 0/16 |
+
+The timezone check earns its place once the question is not phrased in the gage's own
+timezone. Every model reads 15:30 UTC as a local clock time and returns the wrong hour of
+record, and the declaration fixes it for Sonnet and Opus outright. It does not fix Haiku,
+which sends `15:30-06:00`, pairing the UTC clock reading with the local offset. That is
+internally consistent and timezone-aware, so it passes: the check enforces that an offset
+is present, not that it is the right one, and nothing in the declaration can catch a model
+asserting a wrong offset confidently.
+
+The datum and provenance checks still do not discriminate. All three models fetch the
+station datum, add it themselves, and pass the correct elevation, and all three decline to
+invent a precipitation figure. Building the harder tasks did surface a real defect: a bare
+number needing a datum shift was caught by nothing, because carry-over detection only
+compared units, and a guarded tool would have returned 18.6 ft for a freeboard of 17.1.
+Carry-over now covers reference frames as well as units. The honest reading is that the
+datum machinery is defensive rather than demonstrated, and that on measured evidence the
+unit carry-over and timezone checks are what earn their weight.
+
+Three library defects were found by running the benchmark rather than by review: quantity
+objects arriving JSON-encoded inside the string variant were rejected, a timezone declared
+as a DST-observing region shifted timestamps from records published in local standard time,
+and a bare number needing a datum shift was caught by nothing. All three are fixed and
+covered by tests.
+
+`--suite grid` carries the same hazard into power systems, and the result is negative in a
+way that sharpens the claim. Across 192 runs, every model answered both grid tasks
+correctly at baseline. Given a unit published in MW and a tool declaring W, they sent
+3,900,000; given hours against seconds, they sent 21,600. The same models, in the same
+harness, passed 1250 cfs unconverted into a parameter declared in m3/s on every single
+baseline run.
+
+The difference is not the domain but the arithmetic. MW to W and kV to V are SI prefix
+conversions, and models perform them reliably. cfs to m3/s is a factor of 0.0283 with no
+prefix relationship, and they do not.
+
+So the hazard is narrower than "units", and the honest scope is units with no prefix
+relationship to the declared one: customary and legacy systems such as US hydrology,
+oil and gas, aviation, and building services. In a domain that is SI throughout, the
+dimensional check still refuses genuinely wrong quantities, but the carry-over check has
+no measured failure to prevent.
+
+## Status
+
+Version 0.3. The quantity type, specifications, tool decoration, schema generation,
+provenance auditing, series support, the MCP proxy, the provider adapters, and the water
+pack are implemented and tested.
+
+A coordinate reference system is carried as a consistency tag and checked for equality,
+never converted. This is a deliberate boundary rather than an unfinished feature: a scalar
+quantity has no coordinates to reproject, so reprojection belongs to a point or geometry
+type that this library does not define. Use `pyproj` for the geometry and declare the CRS
+here so mismatches are caught where quantities meet.
+
+Framework adapters cover the OpenAI and Anthropic tool formats, not the higher-level agent
+frameworks. Retrieval covers instantaneous values and site records from USGS Water
+Services; daily values, statistics, and other agencies are not implemented.
+
+## Licence
+
+MIT
