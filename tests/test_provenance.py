@@ -178,3 +178,69 @@ def test_a_matching_magnitude_on_the_same_datum_is_not_flagged():
     with session():
         read_flood()
         assert elevation(31.0).magnitude == pytest.approx(31.0)
+
+
+def test_a_number_computed_from_two_outputs_is_derived_not_unsourced():
+    """Adding a station datum to a stage is traceable even though no tool returned it."""
+    with session() as s:
+        s.record("read_gage_height", "output", "return", Q(12.4, "ft"))
+        s.record("read_station_datum", "output", "return", Q(1.5, "ft"))
+        audit = s.audit_answer("The water surface is at 13.9 ft NAVD88.")
+    assert audit.ok
+    assert [c.status for c in audit.claims] == ["derived"]
+
+
+def test_a_number_repeated_from_the_question_is_quoted():
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        audit = s.audit_answer(
+            "No forecast is available for the next 36 hours; observed flow is 1250 cfs.",
+            context="What is the forecast peak within the next 36 hours?",
+        )
+    assert audit.ok
+    assert [c.status for c in audit.claims] == ["quoted", "sourced"]
+
+
+def test_fabrication_survives_both_relaxations():
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        audit = s.audit_answer("The peak will reach 4200 cfs.",
+                               context="What is the forecast peak discharge?")
+    assert not audit.ok
+    assert audit.unsourced[0].text == "4200 cfs"
+
+
+def test_derivation_does_not_cross_dimensions():
+    """Only sums and differences of like dimensions are followed."""
+    with session() as s:
+        s.record("a", "output", "return", Q(1250.0, "cfs"))
+        s.record("b", "output", "return", Q(29000.0, "km**2"))
+        reached = {round(float(q.magnitude), 6) for q in s._derivable()}
+    assert 30250.0 not in reached
+
+
+def test_a_derived_value_stated_without_a_unit_is_still_derived():
+    """Models write "13.9 ft NAVD88" and also plain "13.9"; both are the same claim."""
+    with session() as s:
+        s.record("read_gage_height", "output", "return", Q(12.4, "ft"))
+        s.record("read_station_datum", "output", "return", Q(1.5, "ft"))
+        audit = s.audit_answer("Water surface: 12.4 + 1.5 = 13.9 NAVD88.")
+    assert audit.ok
+    assert "unsourced" not in {c.status for c in audit.claims}
+
+
+def test_precision_is_taken_from_the_literal_not_the_float():
+    """17 is two significant figures and restates 17.1; str(17.0) implies otherwise."""
+    with session() as s:
+        s.record("freeboard", "output", "return", Q(17.1, "ft"))
+        assert s.audit_answer("About 17 ft of freeboard.").ok
+        assert s.audit_answer("About 17.1 ft of freeboard.").ok
+        # A genuinely different number is still caught.
+        assert not s.audit_answer("About 24 ft of freeboard.").ok
+
+
+def test_rounding_tolerance_does_not_swallow_a_fabrication():
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        assert not s.audit_answer("Peak of 4200 cfs.").ok
+        assert s.audit_answer("Flow of 1300 cfs.").ok is False
