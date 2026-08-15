@@ -308,7 +308,14 @@ def score(task: Task, text: str, audit) -> tuple[str, str]:
         return "correct", ""
     # A value rounded to the precision the model actually reported is correct at that
     # precision; grading it wrong would measure significant figures, not physics.
-    if _matches_at_stated_precision(stated, magnitude, reference):
+    # Compare at the precision the model stated, in the unit it stated it in. Converting
+    # into the reference's units first would judge significant figures of another quantity.
+    try:
+        reference_as_stated = task.answer.to(value.units).magnitude
+    except Exception:
+        reference_as_stated = None
+    if reference_as_stated is not None and _matches_at_stated_precision(
+            stated, value.magnitude, reference_as_stated):
         return "correct", "correct at the stated precision"
     ratio = magnitude / reference if reference else float("inf")
     return "wrong", f"stated {stated} against {task.answer:~} (ratio {ratio:.3g})"

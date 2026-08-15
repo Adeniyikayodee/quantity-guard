@@ -4,10 +4,10 @@ Physical quantities carry their unit, vertical datum, timezone, and record quali
 an AI agent's tool boundary as structured metadata the runtime enforces, rather than as
 prose the model is trusted to track.
 
-Across 1,901 benchmark runs on six models, every model tested passed a discharge published
-in cubic feet per second into a parameter declared in cubic metres per second without
-converting it, on every unguarded run. The answer is 35.3 times too large and nothing in
-it looks wrong.
+Across 2,831 benchmark runs on eleven models from seven families, nine passed a discharge
+published in cubic feet per second into a parameter declared in cubic metres per second
+without converting it, on all or nearly all unguarded runs. The answer is 35.3 times too
+large and nothing in it looks wrong.
 
 ```bash
 pip install quantity-guard
@@ -206,7 +206,7 @@ conversation where the model can correct it.
 `bench/` is a reproducible evaluation. Four conditions hold the tool bodies constant and vary
 only the schema shown to the model and whether validation is enforced: `baseline` (plain
 schema, bare numeric results), `schema_only` (physical metadata, no enforcement), `guarded`,
-and `guarded_repair`. Eight replicates per cell, 1,901 usable runs.
+and `guarded_repair`. Eight replicates per cell, 2,831 usable runs across eleven models.
 
 ```bash
 python -m bench --suite core --model anthropic/claude-opus-5 --replicates 8
@@ -219,39 +219,55 @@ large.
 
 | model | baseline | guarded |
 |---|---|---|
-| Claude Haiku 4.5 | 8/8 | 0/8 |
-| Claude Sonnet 4.6 | 8/8 | 0/8 |
 | Claude Opus 5 | 8/8 | 0/8 |
+| Claude Sonnet 4.6 | 8/8 | 0/8 |
+| Claude Haiku 4.5 | 8/8 | 0/8 |
 | DeepSeek V3.2 | 8/8 | 0/8 |
 | Qwen3 235B A22B | 8/8 | 0/8 |
-| Llama 3.3 70B | 3/8 | 0/8 |
+| Kimi K2 | 8/8 | 0/8 |
+| Gemma 3 27B | 8/8 | 0/8 |
+| gpt-oss 120B | 7/8 | 0/8 |
+| Mistral Large | 0/8 | 0/8 |
+| Llama 3.3 70B | 4/8 | 0/8 |
+| Llama 4 Maverick | 0/8 | 0/8 |
 
 Capability does not protect against this. The frontier model fails as reliably as the
 smallest, because the mistake is not one of reasoning: the number arrives with no unit
-attached, so there is nothing to reason about. Llama 3.3 is lower only because it fails the
-harness protocol often enough not to reach the computing tool, and when it does reach it, it
-asserts the wrong unit outright rather than omitting it.
+attached, so there is nothing to reason about. Nor does model family, since the pattern
+holds across Anthropic, DeepSeek, Alibaba, Moonshot, Google, and OpenAI weights.
 
-Declaring the unit in the schema removes most but not all of the error and does not order by
-capability, ranging from 1 to 6 of 8 across models. Enforcement removes it. Task accuracy over
-the core suite moves from 75-83% at baseline to 94-100% enforced, on the five models that
-handle the protocol reliably.
+Three models are exceptions for different reasons. Mistral Large converts correctly.
+Llama 3.3 asserts the wrong unit outright rather than omitting it, sending
+`{"value": 1250.0, "unit": "m**3/s"}` over a reading the tool returned in cfs; keying the
+check on the value the tool ends up holding rather than on how it was written catches that
+too, and the guard fires on 8 of 8 of its guarded runs. Llama 4 Maverick answers without calling any tool at all, at 0.4
+tool calls per run against 2.3 to 2.9 for the rest, so there is no conversion to skip; its
+answers are caught by the provenance audit instead, which flags 79% of its unguarded runs.
+
+Declaring the unit in the schema removes most but not all of the error and does not order
+by capability. Enforcement removes it. Task accuracy over the core suite moves from 75-83%
+at baseline to 94-100% enforced on the seven models that follow the tool protocol reliably.
 
 ### Vertical datum
 
-Silent errors on a levee freeboard task comparing a forecast water surface on NAVD88 against a
-crest surveyed on NGVD29, with no converter tool and no signposting.
+Silent errors on a levee freeboard task comparing a forecast water surface on NAVD88 against
+a crest surveyed on NGVD29, with no converter tool and no signposting.
 
 | model | baseline | guarded |
 |---|---|---|
 | Qwen3 235B A22B | 8/8 | 0/8 |
+| Gemma 3 27B | 8/8 | 0/8 |
+| gpt-oss 120B | 8/8 | 0/8 |
 | Claude Haiku 4.5 | 3/8 | 0/8 |
 | Llama 3.3 70B | 2/8 | 0/8 |
-| Claude Sonnet 4.6, Claude Opus 5, DeepSeek V3.2 | 0/8 | 0/8 |
+| Kimi K2 | 1/8 | 0/8 |
+| Mistral Large | 1/8 | 0/8 |
+| Claude Opus 5, Sonnet 4.6, DeepSeek V3.2, Llama 4 Maverick | 0/8 | 0/8 |
 
-Three of six models report 4.5 ft of freeboard where 4.06 ft is correct, overstating the
-margin by 11% in the direction that matters. The other three notice the datum difference
-unprompted and fetch the offset.
+Seven of eleven models report 4.5 ft of freeboard where 4.06 ft is correct, three of them on
+every run, overstating the margin by 11% in the direction that matters. The rest notice the
+datum difference unprompted and fetch the offset. Whether a model handles this does not
+track its size or its score on the other tasks.
 
 ### Fabricated inputs
 
@@ -261,13 +277,16 @@ tool fails for a station whose area is widely memorised.
 | model | fired |
 |---|---|
 | Llama 3.3 70B | 12/16 |
+| Kimi K2 | 4/16 |
+| Mistral Large | 3/16 |
 | DeepSeek V3.2 | 1/16 |
-| Claude Haiku 4.5, Sonnet 4.6, Opus 5, Qwen3 235B | 0/16 each |
+| Claude Opus 5, Sonnet 4.6, Haiku 4.5, Qwen3 235B, Gemma 3 27B, gpt-oss 120B, Llama 4 Maverick | 0/16 each |
 
-Llama 3.3 supplies the figure from memory in three quarters of guarded runs, and with the
-repair loop enabled every one of those runs then reported the value as unavailable. Claude
-models never attempted it across 48 runs and three separate task designs, so this check is
-load-bearing for some model families and inert for others.
+Four of eleven models supply the figure from memory, Llama 3.3 in three quarters of guarded
+runs. With the repair loop enabled, every one of those runs then reported the value as
+unavailable. No Claude model attempted it across 48 runs and three separate task designs.
+The check is therefore load-bearing for some model families and inert for others, which is
+not visible from any single-family evaluation.
 
 ### Scope
 
@@ -308,8 +327,11 @@ a UTC clock reading with a local offset passes.
 Retrieval covers instantaneous values and site records from USGS Water Services. Framework
 adapters cover the OpenAI and Anthropic tool formats, not higher-level agent frameworks.
 
-Results come from four task suites in two domains at eight replicates per cell, which separates
-the large effects reported above but not differences below roughly ten percentage points.
+Results come from four task suites in two domains at eight replicates per cell, which
+separates the large effects reported above but not differences below roughly ten percentage
+points. Llama 4 Maverick reaches 0.4 tool calls per run and Gemma 3 27B and Llama 3.3 70B
+fail to emit a parseable answer on a substantial fraction of runs, so their unit results
+describe fewer completed tool paths than the denominators suggest.
 
 ## Licence
 
