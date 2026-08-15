@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--conditions", default=",".join(CONDITIONS))
     parser.add_argument("--tasks", default="")
-    parser.add_argument("--suite", default="core", choices=["core", "hard", "grid", "proof"])
+    parser.add_argument("--suite", default="core", choices=["core", "hard", "grid", "proof", "uk"])
     parser.add_argument("--concurrency", type=int, default=6)
     parser.add_argument("--out", default="bench/results.jsonl")
     args = parser.parse_args()

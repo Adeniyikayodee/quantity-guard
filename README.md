@@ -311,6 +311,36 @@ unavailable. No Claude model attempted it across 48 runs and three separate task
 The check is therefore load-bearing for some model families and inert for others, which is
 not visible from any single-family evaluation.
 
+### Which unit pairs
+
+`--suite uk` repeats the carry-over task in British water units, where a licensed
+abstraction is published in megalitres per day and river flow in cubic metres per second.
+Runs in which the model passed the rate on without converting it, against the same models
+on the American task:
+
+| model | cfs to m3/s | Ml/d to m3/s |
+|---|---|---|
+| Claude Opus 5 | 8/8 | 0/8 |
+| Claude Sonnet 4.6 | 8/8 | 0/8 |
+| Claude Haiku 4.5 | 8/8 | 3/8 |
+
+The conversion factor cannot explain the difference: cfs to m3/s is 0.0283 and Ml/d to
+m3/s is 0.0116, both awkward and neither a prefix relationship. What differs is that
+`Ml/d` states its own composition and `cfs` does not. A model reading `Ml/d` can see
+megalitres per day; a model reading `cfs` has to already know the expansion.
+
+That narrows the earlier reading. The hazard is not non-SI units in general but opaque
+abbreviations that hide what they stand for, which is where customary systems concentrate
+them: cfs, gpm, MGD, cusec, acre-ft, psi, scf. On this evidence a service publishing
+`ft**3/s` in full would be safer than one publishing `cfs`, which is a testable claim and
+one this suite does not yet cover.
+
+Two secondary results came out of the same suite. A level published as mASD against a
+warning threshold in mAOD is the British form of the datum hazard, and the guard rejects
+it on the runs where a model tries to difference them. Separately, Haiku restated a
+correct tool result of 1350 Ml as 1.35 Ml in its prose, which the answer audit flagged as
+both unsourced and mislabelled: the arithmetic was right and the reporting was not.
+
 ### Scope
 
 A power systems suite (`--suite grid`) carrying the same carry-over hazard into MW, kV, and MVA
@@ -352,9 +382,9 @@ stations and latest measures from the Environment Agency. Other services need a 
 their own, though the core needs nothing added to work with them. Framework adapters cover
 the OpenAI and Anthropic tool formats, not higher-level agent frameworks.
 
-The benchmark tasks are American, using cfs and NAVD88. The carry-over result should hold
-for any unit pair with no prefix relationship, such as Ml/d against m3/s, but that has not
-been measured.
+The British suite ran on three Claude models only. Four open-weight models were queued and
+did not run, so the opacity reading rests on one model family and should be treated as a
+hypothesis rather than a result.
 
 Results come from four task suites in two domains at eight replicates per cell, which
 separates the large effects reported above but not differences below roughly ten percentage

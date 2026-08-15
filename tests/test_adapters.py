@@ -116,3 +116,11 @@ def test_a_crs_is_a_consistency_tag_on_a_scalar():
     assert (a + Q(1.0, "m", crs="EPSG:4326")).crs == "EPSG:4326"
     with pytest.raises(CRSMismatch):
         a + Q(1.0, "m", crs="EPSG:26915")
+
+
+def test_a_percentage_answer_is_a_quantity():
+    """A question asking for a percentage is answered dimensionlessly, not without units."""
+    from quantity_guard import Q, ureg
+
+    assert ureg.Quantity("20.03 %").to("percent").magnitude == pytest.approx(20.03)
+    assert Q(1.0, "m**3/s") / Q(5.0, "m**3/s") == Q(0.2, "dimensionless")

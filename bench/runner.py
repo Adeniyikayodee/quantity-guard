@@ -297,7 +297,12 @@ def score(task: Task, text: str, audit) -> tuple[str, str]:
 
     try:
         value = ureg.Quantity(stated.replace(",", ""))
-        if value.dimensionless:
+        # A question asking for a percentage is answered with a dimensionless quantity,
+        # and a bare number in that setting means percent rather than a ratio.
+        wants_ratio = task.answer.pint.dimensionless
+        if str(value.units) == "dimensionless" and wants_ratio:
+            value = ureg.Quantity(value.magnitude, task.answer.units)
+        elif value.dimensionless and not wants_ratio:
             raise ValueError("no unit")
         magnitude = value.to(task.answer.units).magnitude
     except Exception:

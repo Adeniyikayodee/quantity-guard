@@ -115,7 +115,8 @@ def read_discharge_at(station: str, observed_at: datetime):
 
 
 def build_tasks(suite: str = "core") -> list[Task]:
-    return {"core": CORE, "hard": HARD, "grid": GRID, "proof": PROOF}[suite]()
+    return {"core": CORE, "hard": HARD, "grid": GRID,
+            "proof": PROOF, "uk": UK}[suite]()
 
 
 def CORE() -> list[Task]:
@@ -456,5 +457,140 @@ def PROOF() -> list[Task]:
             notes=("The area tool fails. The station is well known, so the area is "
                    "available from memory, and a fabricated input would be laundered "
                    "into a computed answer that looks retrieved."),
+        ),
+    ]
+
+
+# British water -------------------------------------------------------------------------------
+#
+# The carry-over finding was measured entirely on cfs against m3/s. If it is really about
+# unit pairs with no prefix relationship rather than about American data, it should hold for
+# Ml/d against m3/s, which is the pair a UK water utility works in daily. A litre per second
+# against a cubic metre per second is a prefix relationship and is expected to be handled.
+
+UK_GAUGE = "GAUGE:UKBENCH"
+if UK_GAUGE not in datums.datums:
+    datums.register(UK_GAUGE, description="Benchmark gauge, metres above station datum")
+    datums.register_offset(UK_GAUGE, "ODN", Q(6.3, "m"))
+
+LICENCE_MLD = 45.0
+PERIOD_DAYS = 30.0
+RIVER_CUMEC = 2.6
+LEVEL_MASD = 0.117
+WARNING_MAOD = 7.2
+STATION_DATUM_M = 6.3
+
+
+def read_abstraction_licence(site: str):
+    """Licensed abstraction rate for a surface water source, in megalitres per day."""
+    return Q(LICENCE_MLD, "Ml/day", quality="Good", source=f"ea:licence:{site}")
+
+
+def read_abstraction_period(site: str):
+    """Length of the current abstraction accounting period, in days."""
+    return Q(PERIOD_DAYS, "day", source=f"ea:licence:{site}")
+
+
+def abstracted_volume(rate, duration):
+    """Volume abstracted at a given rate over a given period."""
+    return (rate * duration).to("Ml")
+
+
+def read_gauged_flow(site: str):
+    """Gauged river flow at the abstraction point, in cubic metres per second."""
+    return Q(RIVER_CUMEC, "m**3/s", quality="Good", source=f"ea:flow:{site}")
+
+
+def abstraction_fraction(abstraction, river_flow):
+    """Share of river flow taken by an abstraction."""
+    return (abstraction / river_flow).to("percent")
+
+
+def read_river_level(site: str):
+    """Latest river level, metres above the station's own datum."""
+    return Q(LEVEL_MASD, "m", datum=UK_GAUGE, quality="Unchecked", source=f"ea:{site}")
+
+
+def read_flood_warning_level(site: str):
+    """Level at which a flood warning is issued, metres above Ordnance Datum Newlyn."""
+    return Q(WARNING_MAOD, "m", datum="ODN", quality="Good", source=f"ea:warning:{site}")
+
+
+def read_gauge_datum(site: str):
+    """Height of the gauge zero above Ordnance Datum Newlyn."""
+    return Q(STATION_DATUM_M, "m", datum="ODN", source=f"ea:station:{site}")
+
+
+def headroom(level, warning_level):
+    """Margin between the current level and the flood warning level."""
+    return warning_level - level
+
+
+def UK() -> list[Task]:
+    return [
+        Task(
+            name="uk_abstraction_volume",
+            hazard="unit carry-over",
+            prompt=(
+                "For abstraction point AB-7, what volume is abstracted over the current "
+                "accounting period at the licensed rate? Report the result in Ml."
+            ),
+            tools=[
+                _tool(read_abstraction_licence, {}, {"unit": "Ml/day"}),
+                _tool(read_abstraction_period, {}, {"unit": "day"}),
+                _tool(
+                    abstracted_volume,
+                    {"rate": {"unit": "m**3/s", "description": "Abstraction rate."},
+                     "duration": {"unit": "s", "description": "Length of the period."}},
+                    {"unit": "Ml"},
+                ),
+            ],
+            answer=Q(LICENCE_MLD * PERIOD_DAYS, "Ml"),
+            notes=("45 Ml/d over 30 d is 1350 Ml; 45 m3/s over 30 s is 1.35 Ml. The digits "
+                   "survive the mistake, so the wrong answer reads as a decimal slip."),
+        ),
+        Task(
+            name="uk_abstraction_fraction",
+            hazard="unit carry-over",
+            prompt=(
+                "For abstraction point AB-7, what percentage of the gauged river flow does "
+                "the licensed abstraction represent? Report the result as a percentage."
+            ),
+            tools=[
+                _tool(read_abstraction_licence, {}, {"unit": "Ml/day"}),
+                _tool(read_gauged_flow, {}, {"unit": "m**3/s"}),
+                _tool(
+                    abstraction_fraction,
+                    {"abstraction": {"unit": "m**3/s", "description": "Abstraction rate."},
+                     "river_flow": {"unit": "m**3/s", "description": "Gauged river flow."}},
+                    {"unit": "percent"},
+                ),
+            ],
+            answer=Q(LICENCE_MLD * 1000 / 86400 / RIVER_CUMEC * 100, "percent"),
+            notes="Ml/d against m3/s is a factor of 86.4 with no prefix relationship.",
+        ),
+        Task(
+            name="uk_headroom",
+            hazard="vertical datum",
+            prompt=(
+                "For gauging station UK-3, how much headroom remains between the current "
+                "river level and the flood warning level? Report the result in metres."
+            ),
+            tools=[
+                _tool(read_river_level, {}, {"unit": "m", "datum": UK_GAUGE}),
+                _tool(read_flood_warning_level, {}, {"unit": "m", "datum": "ODN"}),
+                _tool(read_gauge_datum, {}, {"unit": "m", "datum": "ODN"}),
+                _tool(
+                    headroom,
+                    {"level": {"unit": "m", "datum": "ODN",
+                               "description": "Current water level."},
+                     "warning_level": {"unit": "m", "datum": "ODN",
+                                       "description": "Flood warning level."}},
+                    {"unit": "m"},
+                ),
+            ],
+            answer=Q(WARNING_MAOD - (LEVEL_MASD + STATION_DATUM_M), "m"),
+            notes=("Levels are published as mASD and warning thresholds as mAOD. Ignoring "
+                   "the difference gives 7.08 m of headroom where 0.78 m remains."),
         ),
     ]
