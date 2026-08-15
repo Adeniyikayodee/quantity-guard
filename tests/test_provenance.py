@@ -341,3 +341,24 @@ def test_a_restated_unit_is_still_caught():
         audit = s.audit_answer("The discharge is 1250 m3/s.")
     assert not audit.ok
     assert audit.mislabelled[0].detail.endswith("not m3/s")
+
+
+def test_a_relabelled_unit_is_caught_like_a_dropped_one():
+    """The model asserts m**3/s over a value the tool returned in cfs."""
+    from quantity_guard import UnconvertedCarryOver
+
+    @quantity_tool(returns={"unit": "cfs"})
+    def read_discharge():
+        return Q(1250.0, "cfs")
+
+    @quantity_tool(params={"discharge": {"unit": "m**3/s"}}, returns={"unit": "m**3/s"})
+    def downstream(discharge):
+        return discharge
+
+    with session():
+        read_discharge()
+        with pytest.raises(UnconvertedCarryOver) as exc:
+            downstream({"value": 1250.0, "unit": "m**3/s"})
+        assert "labelled m**3/s" in exc.value.message
+        # The same magnitude with its real unit converts and is accepted.
+        assert downstream({"value": 1250.0, "unit": "cfs"}).magnitude == pytest.approx(35.4, rel=1e-2)

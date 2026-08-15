@@ -178,22 +178,24 @@ class Session:
     def detect_carry_over(self, raw: Any, coerced: Q) -> CarryOver | None:
         """Find a prior output whose magnitude was reused without its reference frame.
 
-        A bare number entering a tool is read in that tool's declared unit and datum.
-        When it also equals a value an earlier tool returned on a different footing, the
-        conversion was almost certainly skipped, which is the arithmetic behind most
-        order-of-magnitude errors in agent transcripts.
+        The signature is a magnitude that survives a conversion unchanged. If the value
+        this tool ends up with equals one an earlier tool returned, while the two are on
+        different footings, no conversion was applied. That covers a unit dropped from a
+        bare number and a unit asserted wrongly in its place, which are the same mistake
+        arriving by different routes.
 
         Two frames are checked. A dropped unit gives a wrong answer by some ratio, and a
         dropped datum gives a wrong answer by an offset, which is the harder of the two
         to notice because the result stays plausible.
         """
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-            return None
         if not coerced.is_scalar:
             return None
+        # Keyed on the value the tool will act on, not on how it was written. A bare
+        # number and an explicitly mislabelled one reach the same wrong magnitude.
+        held = float(coerced.magnitude)
         for entry in self.scalar_outputs:
             prior = entry.quantity
-            if abs(prior.magnitude - float(raw)) > 1e-9 * max(1.0, abs(prior.magnitude)):
+            if abs(prior.magnitude - held) > 1e-9 * max(1.0, abs(prior.magnitude)):
                 continue
             # A datum is only dropped if this parameter declares one to drop it against.
             if (coerced.datum is not None and prior.datum is not None
@@ -500,22 +502,32 @@ def session(context: str = "") -> Iterator[Session]:
         _ACTIVE.reset(token)
 
 
+def _written(raw: Any) -> str:
+    """How the value was sent, for an error the model has to act on."""
+    if isinstance(raw, dict):
+        return f"{raw.get('value')} labelled {raw.get('unit')}"
+    if isinstance(raw, str):
+        return repr(raw)
+    return f"the bare number {raw:g}"
+
+
 def carry_over_message(raw: Any, value: Q, found: CarryOver) -> str:
-    """Explain a dropped reference frame in terms the model can act on."""
+    """Explain a dropped or wrongly asserted reference frame, with the fix to send."""
+    held = f"{float(value.magnitude):g}"
     prior, entry = found.entry.quantity, found.entry
     source = f"{entry.tool}.{entry.field}"
     if found.reason == "datum":
         return (
-            f"received the bare number {raw:g}, which this parameter reads as "
+            f"received {_written(raw)}, which this parameter reads as "
             f"{value.magnitude:g} {value.units:~P} on {value.datum}, but {source} "
             f"returned it on {prior.datum}. These are measured from different "
             f"references, so the "
             f"magnitude cannot be reused; convert it to {value.datum} first, or resend "
-            f'it as {{"value": {raw:g}, "datum": "{prior.datum}"}}'
+            f'it as {{"value": {held}, "datum": "{prior.datum}"}}'
         )
     return (
-        f"received the bare number {raw:g}, which this tool reads as {value:~}, but "
+        f"received {_written(raw)}, which this tool reads as {value:~}, but "
         f"{source} returned {prior:~} and no conversion was applied; resend the value "
-        f'with its original unit, as {{"value": {raw:g}, '
+        f'with its original unit, as {{"value": {held}, '
         f'"unit": "{format(prior.units, "~")}"}}'
     )
