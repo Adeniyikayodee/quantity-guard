@@ -244,3 +244,100 @@ def test_rounding_tolerance_does_not_swallow_a_fabrication():
         s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
         assert not s.audit_answer("Peak of 4200 cfs.").ok
         assert s.audit_answer("Flow of 1300 cfs.").ok is False
+
+
+# Sourced inputs ---------------------------------------------------------------------------
+
+
+def _runoff(sourced: bool):
+    @quantity_tool(params={"discharge": {"unit": "m**3/s"},
+                           "area": {"unit": "km**2", "sourced": sourced}},
+                   returns={"unit": "mm/day"})
+    def runoff(discharge, area):
+        return (discharge / area).to("mm/day")
+    return runoff
+
+
+def test_a_value_from_nowhere_is_refused_at_the_input():
+    """A fabricated input would otherwise launder into an output the audit calls sourced."""
+    from quantity_guard import UnsourcedInput
+
+    tool = _runoff(sourced=True)
+    with session(context="runoff depth at station 07374000?") as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        with pytest.raises(UnsourcedInput) as exc:
+            tool("1250 cfs", 2915830.0)
+        assert "no tool returned" in exc.value.message
+
+
+def test_a_retrieved_value_passes():
+    tool = _runoff(sourced=True)
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        s.record("read_area", "output", "return", Q(29000.0, "km**2"))
+        assert tool("1250 cfs", 29000.0).magnitude > 0
+
+
+def test_a_value_the_asker_supplied_passes():
+    tool = _runoff(sourced=True)
+    with session(context="runoff over the 29000 km2 basin?") as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        assert tool("1250 cfs", 29000.0).magnitude > 0
+
+
+def test_a_value_derived_from_retrieved_ones_passes():
+    tool = _runoff(sourced=True)
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        s.record("upper_basin", "output", "return", Q(20000.0, "km**2"))
+        s.record("lower_basin", "output", "return", Q(9000.0, "km**2"))
+        assert tool("1250 cfs", 29000.0).magnitude > 0
+
+
+def test_the_check_is_opt_in():
+    """Most parameters legitimately take values the model chose; only some must not."""
+    tool = _runoff(sourced=False)
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        assert tool("1250 cfs", 2915830.0).magnitude > 0
+
+
+def test_a_series_input_is_not_second_guessed():
+    np = pytest.importorskip("numpy")
+    tool = _runoff(sourced=True)
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        assert tool("1250 cfs", [29000.0, 29000.0]).magnitude.shape == (2,)
+
+
+def test_a_sign_carried_in_the_prose_still_matches():
+    """A tool returns -0.44 ft; the model writes "subtract 0.44 ft"."""
+    with session() as s:
+        s.record("vertcon_offset", "output", "return", Q(-0.44, "ft"))
+        audit = s.audit_answer("Subtract the 0.44 ft datum offset from the crest.")
+    assert audit.ok
+    assert audit.claims[0].status == "sourced"
+
+
+def test_as_is_not_attoseconds():
+    """pint parses "as"; in prose it is never a unit."""
+    with session() as s:
+        s.record("read_crest", "output", "return", Q(22.9, "ft"))
+        audit = s.audit_answer("The crest was surveyed in 1974 as part of the record set.")
+    assert audit.ok
+
+
+def test_a_hyphenated_compound_is_a_modifier_not_a_measurement():
+    with session() as s:
+        s.record("read_crest", "output", "return", Q(22.9, "ft"))
+        audit = s.audit_answer("Compared against a 50-year-old survey.")
+    assert audit.ok
+
+
+def test_a_restated_unit_is_still_caught():
+    """The relaxations must not swallow the error the audit exists for."""
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "cfs"))
+        audit = s.audit_answer("The discharge is 1250 m3/s.")
+    assert not audit.ok
+    assert audit.mislabelled[0].detail.endswith("not m3/s")

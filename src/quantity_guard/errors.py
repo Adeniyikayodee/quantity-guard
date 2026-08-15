@@ -102,6 +102,17 @@ class UnconvertedCarryOver(GuardViolation):
     code = "unconverted_carry_over"
 
 
+class UnsourcedInput(GuardViolation):
+    """A value entered a tool having come from neither a tool nor the question.
+
+    Distinct from :class:`UnsourcedNumber`, which is about the final answer. Catching it
+    at the input is what stops an invented figure from being laundered into a computed
+    result the audit would then call sourced.
+    """
+
+    code = "unsourced_input"
+
+
 class UnsourcedNumber(GuardViolation):
     """A number in the final answer traces to no recorded tool output."""
 

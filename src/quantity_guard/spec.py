@@ -43,6 +43,9 @@ class Spec:
     quality: str | None = None
     description: str = ""
     require_explicit_unit: bool = False
+    #: Require the value to trace to a tool output, a derivation of one, or the
+    #: question. Set it on parameters that should never be supplied from memory.
+    sourced: bool = False
 
     @property
     def is_temporal(self) -> bool:

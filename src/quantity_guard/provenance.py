@@ -133,6 +133,8 @@ _NOT_UNITS = {
     "and", "or", "of", "to", "the", "a", "an", "at", "in", "on", "is", "was", "for",
     "from", "by", "with", "per", "about", "above", "below", "over", "under", "than",
     "am", "pm", "utc", "gage", "gauge", "station", "site", "times", "x", "no", "not",
+    # "as" is a valid pint unit (attoseconds) and never means that in prose.
+    "as", "so", "if", "we", "it", "its", "that", "this", "then", "was", "were",
 }
 
 
@@ -142,6 +144,9 @@ class Session:
 
     entries: list[LedgerEntry] = field(default_factory=list)
     calls: int = 0
+    #: The question this block of work answers. Numbers the asker supplied are legitimate
+    #: inputs, so they count as a source alongside the tools.
+    context: str = ""
     #: Calls a tool in ``warn`` mode let through, which ``strict`` would have rejected.
     violations: list[WouldBlock] = field(default_factory=list)
     started: str = field(
@@ -206,6 +211,34 @@ class Session:
                 continue
             return CarryOver(entry, "unit")
         return None
+
+    def traces(self, quantity: Q, tolerance: float = 0.005) -> bool:
+        """Whether a value could have come from a tool, a derivation, or the question.
+
+        Used to check an input before it is acted on, rather than an answer after the
+        fact. A figure that traces to nothing entered the conversation from the model's
+        own memory.
+        """
+        if not quantity.is_scalar:
+            return True
+        value = float(quantity.magnitude)
+        for entry in self.scalar_outputs:
+            converted = self._convert(entry.quantity, quantity.units)
+            if converted is not None and self._close(value, converted, tolerance):
+                return True
+        for candidate in self._derivable():
+            try:
+                magnitude = candidate.to(quantity.units).magnitude
+            except Exception:
+                continue
+            if self._close(value, magnitude, tolerance):
+                return True
+        return any(self._close(value, number, tolerance)
+                   for number in self._context_numbers())
+
+    def _context_numbers(self) -> set[float]:
+        return {float(m.group("num").replace(",", ""))
+                for m in _NUMBER.finditer(self.context)}
 
     # Auditing --------------------------------------------------------------------------
 
@@ -276,7 +309,7 @@ class Session:
             unit_token = ""
             text = raw
 
-        if self._is_ignorable(value, unit_token, raw):
+        if self._is_ignorable(value, unit_token, raw, match):
             return NumberClaim(text=text, value=value, unit=unit_token or None, status="ignored")
 
         magnitude_match: LedgerEntry | None = None
@@ -284,12 +317,13 @@ class Session:
             quantity = entry.quantity
             if unit is not None:
                 converted = self._convert(quantity, unit)
-                if converted is not None and self._close(value, converted, tolerance, decimals):
+                if converted is not None and self._close_either_sign(
+                        value, converted, tolerance, decimals):
                     return NumberClaim(
                         text=text, value=value, unit=unit_token, status="sourced", matched=entry,
                         detail=f"from {entry.tool}.{entry.field}",
                     )
-            if self._close(value, quantity.magnitude, tolerance, decimals):
+            if self._close_either_sign(value, quantity.magnitude, tolerance, decimals):
                 magnitude_match = magnitude_match or entry
                 if unit is None:
                     return NumberClaim(
@@ -321,7 +355,7 @@ class Session:
                     magnitude = candidate.to(unit).magnitude
                 except Exception:
                     continue
-            if self._close(value, magnitude, min(tolerance, 0.001), decimals):
+            if self._close_either_sign(value, magnitude, min(tolerance, 0.001), decimals):
                 return NumberClaim(
                     text=text, value=value, unit=unit_token or None, status="derived",
                     detail="an arithmetic combination of recorded outputs",
@@ -333,7 +367,8 @@ class Session:
         )
 
     @staticmethod
-    def _is_ignorable(value: float, unit_token: str, raw: str) -> bool:
+    def _is_ignorable(value: float, unit_token: str, raw: str,
+                      match: re.Match | None = None) -> bool:
         """Whether a bare number is prose rather than a measurement.
 
         A quantity stated in an answer almost always carries a unit or a decimal part.
@@ -342,6 +377,12 @@ class Session:
         """
         if unit_token:
             return False
+        # A hyphenated compound is a modifier, not a measurement: "a 50-year-old survey"
+        # describes the survey, it does not assert fifty of anything.
+        if match is not None:
+            after = match.string[match.end():match.end() + 2]
+            if after[:1] == "-" and after[1:2].isalpha():
+                return True
         digits = raw.lstrip("-").replace(",", "")
         if "." in digits:
             return False
@@ -370,6 +411,18 @@ class Session:
             return quantity.pint.to(unit).magnitude
         except (pint.DimensionalityError, pint.errors.UndefinedUnitError):
             return None
+
+    @classmethod
+    def _close_either_sign(cls, candidate: float, reference: float, tolerance: float,
+                           decimals: int | None = None) -> bool:
+        """Match a magnitude regardless of which side carries the sign.
+
+        A tool returns a datum offset of -0.44 ft and the model writes "subtract 0.44 ft".
+        The sign has moved into the prose, and the figure is still the retrieved one.
+        Provenance asks where a magnitude came from, so the comparison ignores it.
+        """
+        return (cls._close(candidate, reference, tolerance, decimals)
+                or cls._close(candidate, -reference, tolerance, decimals))
 
     @staticmethod
     def _close(candidate: float, reference: float, tolerance: float,
@@ -433,9 +486,13 @@ class Session:
 
 
 @contextmanager
-def session() -> Iterator[Session]:
-    """Open a recording scope, within which guarded tools log their quantities."""
-    current = Session()
+def session(context: str = "") -> Iterator[Session]:
+    """Open a recording scope, within which guarded tools log their quantities.
+
+    ``context`` is the question being answered. Supplying it lets the ledger tell a
+    number the asker gave from one the model invented.
+    """
+    current = Session(context=context)
     token = _ACTIVE.set(_ACTIVE.get() + (current,))
     try:
         yield current

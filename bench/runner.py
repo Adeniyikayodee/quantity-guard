@@ -173,7 +173,7 @@ def run_one(task: Task, condition: str, client: OpenRouter, replicate: int,
                 {"role": "user", "content": task.prompt}]
     final_text = ""
 
-    with session() as ledger:
+    with session(context=task.prompt) as ledger:
         try:
             for _ in range(max_turns):
                 response = client.complete(messages, schema)

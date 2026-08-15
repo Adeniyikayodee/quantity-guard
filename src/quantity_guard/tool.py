@@ -13,7 +13,7 @@ import inspect
 from datetime import datetime
 from typing import Any, Callable
 
-from .errors import GuardViolation, UnconvertedCarryOver
+from .errors import GuardViolation, UnconvertedCarryOver, UnsourcedInput
 from .provenance import WouldBlock, carry_over_message
 from .provenance import active_session
 from .quantity import Q
@@ -94,6 +94,7 @@ class GuardedTool:
             value = spec.coerce(raw, field=name)
             if session is not None and isinstance(value, Q):
                 self._reject_carry_over(session, raw, value, name)
+                self._reject_unsourced(session, spec, value, name)
         except GuardViolation as violation:
             if self.enforcement == "strict":
                 raise
@@ -137,6 +138,18 @@ class GuardedTool:
         if found is None:
             return
         raise UnconvertedCarryOver(carry_over_message(raw, value, found), field=field)
+
+    @staticmethod
+    def _reject_unsourced(session, spec: Spec, value: Q, field: str) -> None:
+        if not spec.sourced or session.traces(value):
+            return
+        raise UnsourcedInput(
+            f"received {value:~}, which no tool returned and the question did not "
+            f"supply. This parameter must carry a retrieved value, because a figure "
+            f"taken from memory here would be laundered into the result and would "
+            f"look sourced afterwards. Retrieve it, or report that it is unavailable",
+            field=field,
+        )
 
     def _validate_result(self, result: Any) -> Any:
         if self.returns is None or self.enforcement == "off":

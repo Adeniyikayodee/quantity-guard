@@ -375,6 +375,28 @@ gage's own reference and differencing it against an absolute elevation is refuse
 than quietly wrong. Network access goes through a replaceable `fetch`, and the tests run
 against recorded responses; `pytest -m live` checks them against the service.
 
+## Requiring an input to have come from somewhere
+
+`sourced=True` on a parameter requires its value to trace to a tool output, an arithmetic
+combination of tool outputs, or the question itself. It closes a gap the answer audit
+cannot: a fabricated *input* produces a computed *output* that the audit then reports as
+sourced, because a tool really did return it.
+
+```python
+@quantity_tool(params={"discharge": {"unit": "m**3/s"},
+                       "area": {"unit": "km**2", "sourced": True}})
+def runoff_depth(discharge, area):
+    ...
+
+with session(context=question):
+    runoff_depth("1250 cfs", 2915830.0)
+# UnsourcedInput: received 2.91583e+06 km², which no tool returned and the question
+# did not supply
+```
+
+It is opt-in, because most parameters legitimately take values the model chose. Pass the
+question as `session(context=...)` so a figure the asker supplied counts as a source.
+
 ## Answering where a number came from
 
 The audit issues one of five verdicts per figure. `sourced` matched a recorded output.
@@ -489,14 +511,38 @@ internally consistent and timezone-aware, so it passes: the check enforces that 
 is present, not that it is the right one, and nothing in the declaration can catch a model
 asserting a wrong offset confidently.
 
-The datum and provenance checks still do not discriminate. All three models fetch the
-station datum, add it themselves, and pass the correct elevation, and all three decline to
-invent a precipitation figure. Building the harder tasks did surface a real defect: a bare
-number needing a datum shift was caught by nothing, because carry-over detection only
-compared units, and a guarded tool would have returned 18.6 ft for a freeboard of 17.1.
-Carry-over now covers reference frames as well as units. The honest reading is that the
-datum machinery is defensive rather than demonstrated, and that on measured evidence the
-unit carry-over and timezone checks are what earn their weight.
+Building the harder tasks did surface a real defect: a bare number needing a datum shift
+was caught by nothing, because carry-over detection only compared units, and a guarded tool
+would have returned 18.6 ft for a freeboard of 17.1. Carry-over now covers reference frames
+as well as units.
+
+`--suite proof` puts the remaining two hazards where they actually occur rather than where
+they are easy to spot. The datum task compares a forecast water surface on NAVD88 against a
+levee crest surveyed on NGVD29, with nothing in the tool names saying so and a VERTCON
+offset available only if the model realises it needs one. The provenance task makes the
+drainage area tool fail for a station whose area any model can recall, so a fabricated
+input would be laundered into a computed answer.
+
+| hazard, silent errors | baseline | schema only | guarded | guarded + repair |
+|---|---|---|---|---|
+| vertical datum, Haiku 4.5 | 3/8 | 0/8 | 0/8 | 0/8 |
+| vertical datum, Sonnet 4.6 | 0/8 | 0/8 | 0/8 | 0/8 |
+| vertical datum, Opus 5 | 0/8 | 0/8 | 0/8 | 0/8 |
+| provenance, all three | 0/24 | 0/24 | 0/24 | 0/24 |
+
+The datum check earns its place on the smallest model, which reports 4.5 ft of freeboard
+where 4.06 ft is correct, overstating the margin by 11% in the direction that matters. The
+larger models notice the datum difference unprompted and fetch the offset.
+
+The provenance check does not. Across three task designs, no tool for the quantity, a
+quantity with strong priors, and a required tool failing outright, three models and 96
+runs, the sourced-input check never fired once. Every model reported the value as
+unavailable rather than supplying it from memory. The honest conclusion is that these
+models do not fabricate retrieved quantities in a tool-using loop, and that this check is
+insurance against a failure mode they do not currently exhibit. It is kept because the
+cost is a flag on one parameter, and because the Grid-Mind result shows the failure is real
+in other harnesses, but it is not carrying weight here and this README will not pretend
+otherwise.
 
 Three library defects were found by running the benchmark rather than by review: quantity
 objects arriving JSON-encoded inside the string variant were rejected, a timezone declared

@@ -16,6 +16,7 @@ from .errors import (
     TimezoneError,
     UnconvertedCarryOver,
     UnitParseError,
+    UnsourcedInput,
     UnsourcedNumber,
 )
 from .adapters import Toolbox, schema, toolbox
@@ -25,7 +26,7 @@ from .registry import datums, ureg
 from .spec import Spec
 from .tool import GuardedTool, quantity_tool
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "Q",
@@ -53,5 +54,6 @@ __all__ = [
     "MissingUnit",
     "UnconvertedCarryOver",
     "UnitParseError",
+    "UnsourcedInput",
     "UnsourcedNumber",
 ]
