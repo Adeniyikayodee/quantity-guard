@@ -170,19 +170,42 @@ runoff_depth("1250 cfs", 2915830.0)
 
 ## Reading real data
 
-`quantity_guard.packs.usgs` retrieves from USGS Water Services and keeps what the service
-publishes: a unit code per variable, a qualifier marking the record provisional or approved,
-an explicit UTC offset per timestamp, and a site record giving the gage datum.
+Nothing in the library is specific to one country. Units come from `pint`, timezones are
+IANA names, and datums are registered by name, so the checks apply wherever the data comes
+from. Twenty-two national and tidal datums are pre-registered, including ODN, NAP,
+EVRF2019, DHHN2016, AHD, CGVD2013, NZVD2016, and LAT, and any other can be added with
+`datums.register`. An offset between two of them is never assumed, because it varies with
+location everywhere, not only in North America.
+
+Two retrieval packs are included, one American and one British, mainly to show that the
+hazard has the same shape in both.
 
 ```python
+from quantity_guard.packs import usgs, ea
+
 site, values = usgs.reading("07374000")
-values["00060"].value      # Q(234000 ft3/s (provisional))
-values["00065"].value      # Q(7.73 ft (GAGE:07374000, provisional))
+values["00060"].value          # Q(234000 ft3/s (provisional))
+values["00065"].value          # Q(7.73 ft (GAGE:07374000, provisional))
+
+station, levels = ea.reading("E21136")
+levels[0].value                # Q(0.117 m (GAUGE:E21136))
+levels[0].value.to_datum("ODN")  # Q(6.417 m (ODN))
 ```
 
-Reading the site record registers the station datum, so differencing a gage height against an
-absolute elevation is refused. Network access goes through a replaceable `fetch`; tests run
-against recorded responses, and `pytest -m live` checks them against the service.
+The vocabularies differ and the problem does not. USGS publishes gage height against a
+station datum recorded in the site metadata; the Environment Agency publishes levels as
+`mASD`, metres above the station's own zero, or `mAOD`, metres above Ordnance Datum Newlyn,
+with the offset between them in the station record. In both cases reading the station record
+registers the local datum, so differencing a stage against an absolute elevation is refused
+rather than quietly wrong.
+
+Both services publish more than a number, and both are usually read as though they did not:
+a unit per variable, a quality qualifier, an explicit timezone, and a datum. Network access
+goes through a replaceable `fetch`; tests run against recorded responses, and `pytest -m live`
+checks them against the services.
+
+Quality codes are mapped per agency. USGS single letters and Environment Agency words are
+both understood, and `QUALITY_ALIASES` takes entries for any other publisher.
 
 ## Adopting incrementally
 
@@ -324,8 +347,14 @@ this library does not define.
 The timezone check enforces that an offset is present, not that it is correct. A model pairing
 a UTC clock reading with a local offset passes.
 
-Retrieval covers instantaneous values and site records from USGS Water Services. Framework
-adapters cover the OpenAI and Anthropic tool formats, not higher-level agent frameworks.
+Retrieval covers instantaneous values and site records from USGS Water Services, and
+stations and latest measures from the Environment Agency. Other services need a pack of
+their own, though the core needs nothing added to work with them. Framework adapters cover
+the OpenAI and Anthropic tool formats, not higher-level agent frameworks.
+
+The benchmark tasks are American, using cfs and NAVD88. The carry-over result should hold
+for any unit pair with no prefix relationship, such as Ml/d against m3/s, but that has not
+been measured.
 
 Results come from four task suites in two domains at eight replicates per cell, which
 separates the large effects reported above but not differences below roughly ten percentage

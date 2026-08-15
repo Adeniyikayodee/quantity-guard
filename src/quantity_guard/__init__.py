@@ -26,7 +26,7 @@ from .registry import datums, ureg
 from .spec import Spec
 from .tool import GuardedTool, quantity_tool
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 __all__ = [
     "Q",

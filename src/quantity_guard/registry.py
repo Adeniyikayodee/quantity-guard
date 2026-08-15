@@ -47,14 +47,22 @@ QUALITY_RANK: dict[str, int] = {
     "unverified": 3,
 }
 
-# Single-letter codes as published on USGS time series.
+# Agency codes for the same idea. Extend the mapping for a service not listed here;
+# nothing else in the library assumes a particular publisher.
 QUALITY_ALIASES: dict[str, str] = {
+    # USGS single-letter codes
     "A": "approved",
     "R": "reviewed",
     "e": "estimated",
     "E": "estimated",
     "P": "provisional",
     "p": "provisional",
+    # UK Environment Agency
+    "Good": "approved",
+    "Unchecked": "provisional",
+    "Estimated": "estimated",
+    "Suspect": "unverified",
+    "Missing": "unverified",
 }
 
 
@@ -143,9 +151,36 @@ class DatumRegistry:
 
 datums = DatumRegistry()
 
-# Vertical datums in common use in US water work.
-datums.register("NAVD88", description="North American Vertical Datum of 1988")
-datums.register("NGVD29", description="National Geodetic Vertical Datum of 1929")
-datums.register("GAGE", description="Local gage datum, station-specific offset required")
-datums.register("MSL", description="Mean sea level, station-dependent")
-datums.register("MLLW", description="Mean lower low water")
+# National vertical datums in common use. Registering a name only makes it referenceable;
+# every offset between two of them is location-dependent and must still be given
+# explicitly. Add any datum not listed here with ``datums.register``.
+for _name, _description in [
+    # North America
+    ("NAVD88", "North American Vertical Datum of 1988"),
+    ("NGVD29", "National Geodetic Vertical Datum of 1929"),
+    ("CGVD2013", "Canadian Geodetic Vertical Datum of 2013"),
+    ("CGVD28", "Canadian Geodetic Vertical Datum of 1928"),
+    # Britain and Ireland
+    ("ODN", "Ordnance Datum Newlyn, mainland Great Britain"),
+    ("BELFAST", "Belfast Ordnance Datum, Northern Ireland"),
+    ("MALIN", "Malin Head datum, Ireland"),
+    # Continental Europe
+    ("NAP", "Normaal Amsterdams Peil, Netherlands"),
+    ("EVRF2019", "European Vertical Reference Frame 2019"),
+    ("EVRF2000", "European Vertical Reference Frame 2000"),
+    ("DHHN2016", "Deutsches Haupthoehennetz 2016, Germany"),
+    ("NGF-IGN69", "Nivellement General de la France, IGN69"),
+    # Elsewhere
+    ("AHD", "Australian Height Datum"),
+    ("NZVD2016", "New Zealand Vertical Datum 2016"),
+    # Global and tidal
+    ("EGM2008", "Earth Gravitational Model 2008 geoid"),
+    ("EGM96", "Earth Gravitational Model 1996 geoid"),
+    ("MSL", "Mean sea level, station-dependent"),
+    ("MLLW", "Mean lower low water"),
+    ("MHHW", "Mean higher high water"),
+    ("LAT", "Lowest astronomical tide, the usual chart datum in Europe"),
+    ("CD", "Chart datum, port-specific"),
+    ("GAGE", "Local gage or gauge datum, station-specific offset required"),
+]:
+    datums.register(_name, description=_description)

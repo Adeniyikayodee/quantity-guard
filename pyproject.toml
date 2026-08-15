@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quantity-guard"
-version = "0.5.1"
+version = "0.6.0"
 description = "Typed physical quantities at the AI agent tool boundary: units, vertical datums, timezones, and record quality, enforced at call time."
 readme = "README.md"
 requires-python = ">=3.10"
