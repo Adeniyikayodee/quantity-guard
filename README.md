@@ -4,10 +4,11 @@ Physical quantities carry their unit, vertical datum, timezone, and record quali
 an AI agent's tool boundary as structured metadata the runtime enforces, rather than as
 prose the model is trusted to track.
 
-Across 2,831 benchmark runs on eleven models from seven families, nine passed a discharge
+Across 3,639 benchmark runs on eleven models from seven families, every model that
+reached the computing tool passed a discharge
 published in cubic feet per second into a parameter declared in cubic metres per second
-without converting it, on all or nearly all unguarded runs. The answer is 35.3 times too
-large and nothing in it looks wrong.
+without converting it, on every unguarded run. The answer is 35.3 times too large and
+nothing in it looks wrong.
 
 ```bash
 pip install quantity-guard
@@ -229,7 +230,7 @@ conversation where the model can correct it.
 `bench/` is a reproducible evaluation. Four conditions hold the tool bodies constant and vary
 only the schema shown to the model and whether validation is enforced: `baseline` (plain
 schema, bare numeric results), `schema_only` (physical metadata, no enforcement), `guarded`,
-and `guarded_repair`. Eight replicates per cell, 2,831 usable runs across eleven models.
+and `guarded_repair`. Eight replicates per cell, 3,639 usable runs across eleven models.
 
 ```bash
 python -m bench --suite core --model anthropic/claude-opus-5 --replicates 8
@@ -237,39 +238,34 @@ python -m bench --suite core --model anthropic/claude-opus-5 --replicates 8
 
 ### Unit carry-over
 
-Runs in which the model skipped the cfs to m3/s conversion, giving an answer 35.3 times too
-large.
+Runs at baseline in which the model passed a discharge published in cfs into a parameter
+declared in m3/s without converting it. Counted on what reached the tool rather than on the
+final answer, because a model that carries the error forward through further arithmetic
+still made it.
 
-| model | baseline | guarded |
-|---|---|---|
-| Claude Opus 5 | 8/8 | 0/8 |
-| Claude Sonnet 4.6 | 8/8 | 0/8 |
-| Claude Haiku 4.5 | 8/8 | 0/8 |
-| DeepSeek V3.2 | 8/8 | 0/8 |
-| Qwen3 235B A22B | 8/8 | 0/8 |
-| Kimi K2 | 8/8 | 0/8 |
-| Gemma 3 27B | 8/8 | 0/8 |
-| gpt-oss 120B | 7/8 | 0/8 |
-| Mistral Large | 0/8 | 0/8 |
-| Llama 3.3 70B | 4/8 | 0/8 |
-| Llama 4 Maverick | 0/8 | 0/8 |
+| model | passed on unconverted |
+|---|---|
+| Claude Opus 5 | 8/8 |
+| Claude Sonnet 4.6 | 8/8 |
+| Claude Haiku 4.5 | 8/8 |
+| DeepSeek V3.2 | 8/8 |
+| Qwen3 235B A22B | 8/8 |
+| Kimi K2 | 8/8 |
+| gpt-oss 120B | 8/8 |
+| Mistral Large | 8/8 |
+| Gemma 3 27B | 8/8 |
+| Llama 3.3 70B | 17/17 |
 
-Capability does not protect against this. The frontier model fails as reliably as the
-smallest, because the mistake is not one of reasoning: the number arrives with no unit
-attached, so there is nothing to reason about. Nor does model family, since the pattern
-holds across Anthropic, DeepSeek, Alibaba, Moonshot, Google, and OpenAI weights.
+Every model that reached the computing tool made the error on every run. Neither capability
+nor family predicts it: the number arrives with no unit attached, so there is nothing to
+reason about, and a stronger model reasons better about the wrong object. Llama 4 Maverick
+is absent because it answers without calling tools at all, at 0.4 calls per run against 2.3
+to 2.9 for the rest, and is caught by the provenance audit instead.
 
-Three models are exceptions for different reasons. Mistral Large converts correctly.
-Llama 3.3 asserts the wrong unit outright rather than omitting it, sending
-`{"value": 1250.0, "unit": "m**3/s"}` over a reading the tool returned in cfs; keying the
-check on the value the tool ends up holding rather than on how it was written catches that
-too, and the guard fires on 8 of 8 of its guarded runs. Llama 4 Maverick answers without calling any tool at all, at 0.4
-tool calls per run against 2.3 to 2.9 for the rest, so there is no conversion to skip; its
-answers are caught by the provenance audit instead, which flags 79% of its unguarded runs.
-
-Declaring the unit in the schema removes most but not all of the error and does not order
-by capability. Enforcement removes it. Task accuracy over the core suite moves from 75-83%
-at baseline to 94-100% enforced on the seven models that follow the tool protocol reliably.
+Under enforcement the error reaches the tool on no run of any model. Declaring the unit in
+the schema alone removes most but not all of it and does not order by capability. Task
+accuracy over the core suite moves from 75-83% at baseline to 94-100% enforced, on the
+models that follow the tool protocol reliably.
 
 ### Vertical datum
 
@@ -313,33 +309,40 @@ not visible from any single-family evaluation.
 
 ### Which unit pairs
 
-`--suite uk` repeats the carry-over task in British water units, where a licensed
-abstraction is published in megalitres per day and river flow in cubic metres per second.
-Runs in which the model passed the rate on without converting it, against the same models
-on the American task:
+`--suite uk` repeats the task in British water units, where a licensed abstraction is
+published in megalitres per day and river flow in cubic metres per second. Same harness,
+same structure, different unit.
 
 | model | cfs to m3/s | Ml/d to m3/s |
 |---|---|---|
 | Claude Opus 5 | 8/8 | 0/8 |
 | Claude Sonnet 4.6 | 8/8 | 0/8 |
+| Kimi K2 | 8/8 | 0/8 |
+| gpt-oss 120B | 8/8 | 0/6 |
+| Mistral Large | 8/8 | 0/8 |
+| DeepSeek V3.2 | 8/8 | 1/11 |
 | Claude Haiku 4.5 | 8/8 | 3/8 |
+| Qwen3 235B A22B | 8/8 | 7/8 |
 
-The conversion factor cannot explain the difference: cfs to m3/s is 0.0283 and Ml/d to
-m3/s is 0.0116, both awkward and neither a prefix relationship. What differs is that
-`Ml/d` states its own composition and `cfs` does not. A model reading `Ml/d` can see
-megalitres per day; a model reading `cfs` has to already know the expansion.
+Seven of eight models convert Ml/d reliably and none of them converts cfs. The conversion
+factor does not explain it: cfs to m3/s is 0.0283 and Ml/d to m3/s is 0.0116, both awkward
+and neither a prefix relationship. What differs is that `Ml/d` states its own composition
+and `cfs` does not. A model reading `Ml/d` can see megalitres per day; a model reading `cfs`
+has to already know the expansion.
 
-That narrows the earlier reading. The hazard is not non-SI units in general but opaque
-abbreviations that hide what they stand for, which is where customary systems concentrate
-them: cfs, gpm, MGD, cusec, acre-ft, psi, scf. On this evidence a service publishing
-`ft**3/s` in full would be safer than one publishing `cfs`, which is a testable claim and
-one this suite does not yet cover.
+So the hazard is narrower than non-SI units. It is opaque abbreviations that hide what they
+stand for, which is where customary systems concentrate them: cfs, gpm, MGD, cusec, acre-ft,
+psi, scf. The prediction is that a service publishing `ft**3/s` in full would be safer than
+one publishing `cfs`, which this suite does not test.
 
-Two secondary results came out of the same suite. A level published as mASD against a
-warning threshold in mAOD is the British form of the datum hazard, and the guard rejects
-it on the runs where a model tries to difference them. Separately, Haiku restated a
-correct tool result of 1350 Ml as 1.35 Ml in its prose, which the answer audit flagged as
-both unsourced and mislabelled: the arithmetic was right and the reporting was not.
+Qwen3 235B is the exception and fails both, so opacity is not the whole account. Gemma 3 27B
+was rate limited on 52 of 96 British runs and is excluded from that column.
+
+Two secondary results came from the same suite. A level published as mASD against a warning
+threshold in mAOD is the British form of the datum hazard, and the guard rejects the attempt
+to difference them. Separately, Haiku restated a correct tool result of 1350 Ml as 1.35 Ml
+in prose, which the audit flagged as both unsourced and mislabelled: the arithmetic was right
+and the reporting was not.
 
 ### Scope
 
@@ -382,9 +385,8 @@ stations and latest measures from the Environment Agency. Other services need a 
 their own, though the core needs nothing added to work with them. Framework adapters cover
 the OpenAI and Anthropic tool formats, not higher-level agent frameworks.
 
-The British suite ran on three Claude models only. Four open-weight models were queued and
-did not run, so the opacity reading rests on one model family and should be treated as a
-hypothesis rather than a result.
+The opacity reading rests on one unit pair in one domain, with one model contradicting it.
+It predicts an ordering over unit names that has not been tested directly.
 
 Results come from four task suites in two domains at eight replicates per cell, which
 separates the large effects reported above but not differences below roughly ten percentage
