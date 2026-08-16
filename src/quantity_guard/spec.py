@@ -112,8 +112,20 @@ class Spec:
                 f"expected {self.crs}, received {quantity.crs}", field=field
             )
 
-        if self.quality and quantity.quality:
-            if QUALITY_RANK[quantity.quality] > QUALITY_RANK[normalize_quality(self.quality)]:
+        if self.quality:
+            required = normalize_quality(self.quality)
+            if quantity.quality is None:
+                # Absence of a qualifier is not evidence of approval. A record whose
+                # grade is unknown cannot satisfy a stated floor, or the check would be
+                # satisfiable by discarding the flag.
+                raise QualityViolation(
+                    f"this tool requires {self.quality} record, and the value supplied "
+                    f"carries no quality flag; an unqualified record cannot be assumed "
+                    f"approved, so send the publisher's qualifier alongside the value as "
+                    f'{{"value": ..., "unit": ..., "quality": "<flag>"}}',
+                    field=field,
+                )
+            if QUALITY_RANK[quantity.quality] > QUALITY_RANK[required]:
                 raise QualityViolation(
                     f"this tool requires {self.quality} record, and the value supplied is "
                     f"{quantity.quality}",
@@ -143,6 +155,14 @@ class Spec:
                     f"{sorted(value)}",
                     field=field,
                 )
+            if self.require_explicit_unit and not value.get("unit"):
+                raise MissingUnit(
+                    f"this tool requires an explicit unit, so send "
+                    f'{{"value": {value["value"]}, "unit": "<unit>"}}; the object form '
+                    f"carries a unit key and this one left it "
+                    f"{'empty' if 'unit' in value else 'out'}",
+                    field=field,
+                )
             unit = value.get("unit") or self.unit
             if unit is None:
                 raise MissingUnit(f"no unit given and none declared", field=field)
@@ -166,6 +186,12 @@ class Spec:
                     pass
             return Q.parse(value)
         if isinstance(value, (list, tuple)) or hasattr(value, "__array__"):
+            if self.require_explicit_unit:
+                raise MissingUnit(
+                    f"this tool requires an explicit unit, so send "
+                    f'{{"value": [...], "unit": "<unit>"}} rather than a bare series',
+                    field=field,
+                )
             if self.unit is None:
                 raise MissingUnit("no unit declared for this parameter", field=field)
             return Q(value, self.unit, datum=self.datum)
@@ -253,7 +279,11 @@ class Spec:
             {
                 "type": "object",
                 "properties": obj_props,
-                "required": ["value", "unit"],
+                # Only claim the unit is mandatory when it actually is. Declaring it
+                # required while accepting objects without one states a check the
+                # validator does not perform, and holds a model that follows the schema
+                # to a stricter contract than one that ignores it.
+                "required": ["value", "unit"] if self.require_explicit_unit else ["value"],
                 "additionalProperties": False,
             }
         )

@@ -69,7 +69,8 @@ class NumberClaim:
     text: str
     value: float
     unit: str | None
-    #: "sourced", "derived", "quoted", "unsourced", "unit_mislabelled", or "ignored"
+    #: "sourced", "derived", "quoted", "unsourced", "unit_mislabelled",
+    #: "sign_inverted", or "ignored"
     status: str
     matched: LedgerEntry | None = None
     detail: str = ""
@@ -98,8 +99,18 @@ class AnswerAudit:
         return [c for c in self.claims if c.status == "quoted"]
 
     @property
+    def sign_inverted(self) -> list[NumberClaim]:
+        """Magnitude retrieved, sign reversed, and nothing in the prose accounts for it.
+
+        Reported apart from ``mislabelled`` because the failure is different in kind: the
+        unit is right and the condition described is the opposite one. On a freeboard
+        that is the difference between margin and overtopping.
+        """
+        return [c for c in self.claims if c.status == "sign_inverted"]
+
+    @property
     def ok(self) -> bool:
-        return not self.unsourced and not self.mislabelled
+        return not self.unsourced and not self.mislabelled and not self.sign_inverted
 
     def report(self) -> str:
         lines = []
@@ -109,6 +120,7 @@ class AnswerAudit:
             mark = {
                 "sourced": "ok", "derived": "derived", "quoted": "quoted",
                 "unsourced": "UNSOURCED", "unit_mislabelled": "MISLABELLED",
+                "sign_inverted": "SIGN INVERTED",
             }[claim.status]
             lines.append(f"  [{mark}] {claim.text}  {claim.detail}")
         return "\n".join(lines) or "  (no numeric claims found)"
@@ -118,7 +130,10 @@ class AnswerAudit:
 # optionally divided by a second such word, which covers the forms that occur in prose:
 # cfs, m3/s, m**3/s, m³/s, mm/day, degC.
 _EXPONENT = r"(?:\*\*-?\d+|\^-?\d+|[\d²³])?"
-_WORD = r"[A-Za-zµ°]+" + _EXPONENT
+# A hyphenated compound counts as one word, so "acre-ft" and "acre-feet" read as the unit
+# they are rather than as "acre" followed by prose. The word must still begin with a
+# letter, which keeps "a 50-year-old survey" out: the character after 50 is a hyphen.
+_WORD = r"[A-Za-zµ°]+" + _EXPONENT + r"(?:-[A-Za-z]+" + _EXPONENT + r")*"
 # The lookbehind keeps digits embedded in names out of the audit, so NAVD88 and NGVD29
 # are read as datum names rather than as the measurements 88 and 29.
 _NUMBER = re.compile(
@@ -137,6 +152,18 @@ _NOT_UNITS = {
     "as", "so", "if", "we", "it", "its", "that", "this", "then", "was", "were",
 }
 
+# Wording that accounts for a magnitude being restated without its negative sign. A
+# tool returning -0.44 ft is correctly reported as "subtract 0.44 ft"; the sign has moved
+# into the prose. Absent any of these, a flipped sign is a claim about the opposite
+# condition, which for a freeboard is the difference between margin and overtopping.
+_SIGN_WORDS = {
+    "subtract", "subtracting", "less", "minus", "below", "under", "beneath", "down",
+    "drop", "drops", "dropped", "fall", "falls", "fell", "decrease", "decreased",
+    "decline", "declined", "deficit", "short", "shortfall", "lower", "lowered",
+    "reduce", "reduced", "reduction", "negative", "loss", "lost", "deeper", "deficit",
+    "overtopped", "overtopping", "exceeds", "exceeded", "above",
+}
+
 
 @dataclass
 class Session:
@@ -152,11 +179,17 @@ class Session:
     started: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )
+    #: Cap on retained entries, oldest dropped first. ``None`` keeps everything, which is
+    #: right for a scoped agent run where the manifest has to be complete. A long-running
+    #: process sets it so the ledger cannot grow without bound.
+    max_entries: int | None = None
 
     def record(self, tool: str, role: str, name: str, quantity: Q, note: str = "") -> None:
         self.entries.append(
             LedgerEntry(tool=tool, role=role, field=name, quantity=quantity, call_id=self.calls, note=note)
         )
+        if self.max_entries is not None and len(self.entries) > self.max_entries:
+            del self.entries[:len(self.entries) - self.max_entries]
 
     def record_derived(self, quantity: Q, note: str = "") -> None:
         """Register a value computed outside a guarded tool so the audit accepts it."""
@@ -319,19 +352,15 @@ class Session:
             quantity = entry.quantity
             if unit is not None:
                 converted = self._convert(quantity, unit)
-                if converted is not None and self._close_either_sign(
-                        value, converted, tolerance, decimals):
-                    return NumberClaim(
-                        text=text, value=value, unit=unit_token, status="sourced", matched=entry,
-                        detail=f"from {entry.tool}.{entry.field}",
-                    )
-            if self._close_either_sign(value, quantity.magnitude, tolerance, decimals):
+                if converted is not None:
+                    sign = self._sign_of_match(value, converted, tolerance, decimals)
+                    if sign is not None:
+                        return self._retrieved(text, value, unit_token, entry, sign, match)
+            sign = self._sign_of_match(value, quantity.magnitude, tolerance, decimals)
+            if sign is not None:
                 magnitude_match = magnitude_match or entry
                 if unit is None:
-                    return NumberClaim(
-                        text=text, value=value, unit=None, status="sourced", matched=entry,
-                        detail=f"from {entry.tool}.{entry.field}",
-                    )
+                    return self._retrieved(text, value, None, entry, sign, match)
 
         if magnitude_match is not None and unit is not None:
             native = format(magnitude_match.quantity.units, "~")
@@ -368,6 +397,29 @@ class Session:
             detail="no tool output produced this value",
         )
 
+    @classmethod
+    def _retrieved(cls, text: str, value: float, unit_token: str | None,
+                   entry: LedgerEntry, sign: str, match: re.Match) -> NumberClaim:
+        """A claim whose magnitude came from ``entry``, judged on how the sign matched."""
+        if sign == "same":
+            return NumberClaim(
+                text=text, value=value, unit=unit_token, status="sourced", matched=entry,
+                detail=f"from {entry.tool}.{entry.field}",
+            )
+        if cls._sign_carried_in_prose(match):
+            return NumberClaim(
+                text=text, value=value, unit=unit_token, status="sourced", matched=entry,
+                detail=f"from {entry.tool}.{entry.field}, with the sign in the wording",
+            )
+        return NumberClaim(
+            text=text, value=value, unit=unit_token, status="sign_inverted", matched=entry,
+            detail=(
+                f"magnitude matches {entry.tool}.{entry.field}, but that value is "
+                f"{entry.quantity.magnitude:g} and the answer states {value:g} with no "
+                f"wording that carries the sign; these describe opposite conditions"
+            ),
+        )
+
     @staticmethod
     def _is_ignorable(value: float, unit_token: str, raw: str,
                       match: re.Match | None = None) -> bool:
@@ -388,8 +440,18 @@ class Session:
         digits = raw.lstrip("-").replace(",", "")
         if "." in digits:
             return False
-        # Station and site numbers, which are zero-padded or simply long.
-        if (digits.startswith("0") and len(digits) > 1) or len(digits) >= 5:
+        # An identifier named as one, whatever its shape.
+        if match is not None:
+            before = match.string[max(0, match.start() - 24):match.start()].lower()
+            if re.search(r"\b(?:station|site|gage|gauge|reference|number|no\.?|#)\s*$",
+                         before):
+                return True
+        # Station and site numbers, which are zero-padded or simply long. USGS site
+        # numbers run to eight digits and beyond; the previous threshold of five
+        # discarded every bare integer from 10,000 up, which in this domain means
+        # discharges, reservoir releases, and populations at risk — exactly the
+        # fabrications the audit exists to catch.
+        if (digits.startswith("0") and len(digits) > 1) or len(digits) >= 8:
             return True
         if value.is_integer():
             # Calendar years, and small counts such as list positions or station counts.
@@ -399,13 +461,24 @@ class Session:
     @staticmethod
     def _parse_unit(token: str):
         normalised = token.replace("²", "2").replace("³", "3").replace("^", "**")
+        # A hyphen joins two units into a product: acre-ft, ft-lb.
+        normalised = normalised.replace("-", "*")
         # Prose writes m3/s where pint expects m**3/s.
         normalised = re.sub(r"(?<![*\d])([A-Za-zµ°])(\d)", r"\1**\2", normalised)
-        try:
-            unit = ureg.parse_units(normalised)
-        except Exception:
-            return None
-        return None if not str(unit) else unit
+        candidates = [normalised]
+        # An all-caps abbreviation is a stylistic choice, not a different unit: models
+        # write "1250 CFS" and "1250 MGD". Only tried when the written form fails, so a
+        # genuine capital such as the mega prefix is never overridden.
+        if normalised.isupper():
+            candidates.append(normalised.lower())
+        for candidate in candidates:
+            try:
+                unit = ureg.parse_units(candidate)
+            except Exception:
+                continue
+            if str(unit):
+                return unit
+        return None
 
     @staticmethod
     def _convert(quantity: Q, unit) -> float | None:
@@ -417,14 +490,43 @@ class Session:
     @classmethod
     def _close_either_sign(cls, candidate: float, reference: float, tolerance: float,
                            decimals: int | None = None) -> bool:
-        """Match a magnitude regardless of which side carries the sign.
+        return cls._sign_of_match(candidate, reference, tolerance, decimals) is not None
+
+    @classmethod
+    def _sign_of_match(cls, candidate: float, reference: float, tolerance: float,
+                       decimals: int | None = None) -> str | None:
+        """``"same"``, ``"flipped"``, or ``None`` when the magnitude does not match.
 
         A tool returns a datum offset of -0.44 ft and the model writes "subtract 0.44 ft".
-        The sign has moved into the prose, and the figure is still the retrieved one.
-        Provenance asks where a magnitude came from, so the comparison ignores it.
+        The sign has moved into the prose and the figure is still the retrieved one, so
+        the magnitude has to match either way. But which way it matched is not the same
+        fact, and collapsing the two made a freeboard of -4.06 ft reported as "+4.06 ft
+        of freeboard remaining" indistinguishable from a correct restatement. The caller
+        decides what a flip means; this only reports it.
         """
-        return (cls._close(candidate, reference, tolerance, decimals)
-                or cls._close(candidate, -reference, tolerance, decimals))
+        if cls._close(candidate, reference, tolerance, decimals):
+            return "same"
+        if cls._close(candidate, -reference, tolerance, decimals):
+            return "flipped"
+        return None
+
+    @staticmethod
+    def _sign_carried_in_prose(match: re.Match, window: int = 48) -> bool:
+        """Whether the wording around a number accounts for a flipped sign.
+
+        Both sides are read, because the direction word lands on either: "subtract 0.44
+        ft" puts it before, "0.44 ft below NGVD29" and "4.06 ft above the crest" after.
+        All three restate a negative value correctly, with the sign in the wording rather
+        than the digits. "4.06 ft of freeboard remaining" does not.
+
+        Only a flipped match consults this, so a directional word beside a value whose
+        sign already agrees ("31.0 ft above NAVD88") is never reached and cannot excuse
+        anything.
+        """
+        text = match.string
+        around = (text[max(0, match.start() - window):match.start()]
+                  + " " + text[match.end():match.end() + window])
+        return any(word in _SIGN_WORDS for word in re.findall(r"[a-z]+", around.lower()))
 
     @staticmethod
     def _close(candidate: float, reference: float, tolerance: float,
@@ -438,6 +540,12 @@ class Session:
         # repr of the parsed float implies a precision the author did not state.
         if decimals is None:
             decimals = len(str(candidate).split(".")[1]) if "." in str(candidate) else 0
+        # A single significant figure states too little to match on. "1 kcfs" rounds
+        # together with anything from 500 to 1500 cfs, so accepting it as a restatement
+        # of 1250 turns a 0.5% tolerance into a 40% one. Two figures ("17" for 17.1) is
+        # the point at which the rounding is informative.
+        if decimals == 0 and abs(candidate) < 10:
+            return False
         return round(reference, decimals) == round(candidate, decimals)
 
     def enforcement_report(self) -> str:

@@ -319,6 +319,112 @@ def test_a_sign_carried_in_the_prose_still_matches():
     assert audit.claims[0].status == "sourced"
 
 
+@pytest.mark.parametrize("answer", [
+    "Subtract the 0.44 ft datum offset from the crest.",
+    "The gage datum sits 0.44 ft below NGVD29.",
+    "A shortfall of 0.44 ft.",
+    "The reading dropped 0.44 ft.",
+    # The sign stated in the digits needs no wording at all.
+    "The offset is -0.44 ft.",
+])
+def test_a_negative_value_restated_with_the_sign_in_the_wording_is_sourced(answer):
+    with session() as s:
+        s.record("vertcon_offset", "output", "return", Q(-0.44, "ft"))
+        audit = s.audit_answer(answer)
+    assert audit.ok, audit.report()
+    assert audit.claims[0].status == "sourced"
+
+
+@pytest.mark.parametrize("answer", [
+    "The levee has 4.06 ft of freeboard remaining; no action needed.",
+    "Freeboard is 4.06 ft.",
+])
+def test_a_flipped_sign_with_nothing_to_account_for_it_is_reported(answer):
+    """A freeboard of -4.06 ft means the levee is overtopped by 4.06 ft.
+
+    Matching on magnitude alone reported this as `sourced` with `ok` true, so the audit
+    could not distinguish 4 ft of margin from 4 ft of overtopping. The unit is right and
+    the figure was really retrieved, so it is neither mislabelled nor unsourced; it is
+    its own finding.
+    """
+    with session() as s:
+        s.record("freeboard", "output", "return", Q(-4.06, "ft"))
+        audit = s.audit_answer(answer)
+    assert not audit.ok
+    assert [c.status for c in audit.sign_inverted] == ["sign_inverted"]
+    assert "opposite conditions" in audit.sign_inverted[0].detail
+    assert "SIGN INVERTED" in audit.report()
+
+
+def test_a_directional_word_cannot_excuse_a_value_whose_sign_already_agrees():
+    """Only a flipped match consults the prose, so "above" here is never reached."""
+    with session() as s:
+        s.record("read_crest", "output", "return", Q(31.0, "ft"))
+        audit = s.audit_answer("The crest is 31.0 ft above NAVD88.")
+    assert audit.ok
+    assert audit.claims[0].status == "sourced"
+
+
+@pytest.mark.parametrize("unit", ["cfs", "CFS", "cusecs", "cusec", "ft3/s", "ft^3/s"])
+def test_the_spoken_and_capitalised_forms_of_a_unit_are_understood(unit):
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "ft**3/s"))
+        audit = s.audit_answer(f"Observed discharge is 1250 {unit}.")
+    assert audit.claims[0].status == "sourced", audit.report()
+
+
+def test_a_correctly_converted_answer_in_commonwealth_units_is_not_unsourced():
+    """1250 cfs is 35.4 cumecs. Leaving "cumec" undefined flagged the right answer."""
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "ft**3/s"))
+        audit = s.audit_answer("That is 35.4 cumecs.")
+    assert audit.ok
+    assert audit.claims[0].status == "sourced"
+
+
+def test_a_hyphenated_unit_is_read_as_one_unit():
+    with session() as s:
+        s.record("storage", "output", "return", Q(150000.0, "acre*foot"))
+        for answer in ("Storage is 150000 acre-ft.", "Storage is 150000 acre-feet."):
+            audit = s.audit_answer(answer)
+            assert audit.claims[0].status == "sourced", audit.report()
+
+
+def test_a_single_significant_figure_is_not_a_restatement():
+    """"1 kcfs" rounds together with anything from 500 to 1500 cfs."""
+    with session() as s:
+        s.record("read_discharge", "output", "return", Q(1250.0, "ft**3/s"))
+        assert s.audit_answer("Peak was 1 kcfs.").claims[0].status == "unsourced"
+        # Two figures still round, which is the documented behaviour.
+        s.record("freeboard", "output", "return", Q(17.1, "ft"))
+        assert s.audit_answer("Freeboard is 17 ft.").claims[0].status == "sourced"
+
+
+def test_a_large_bare_number_is_audited_not_dismissed_as_an_identifier():
+    """Bare integers of five digits and up were discarded as site numbers.
+
+    In this domain that covers discharges, reservoir releases, and populations at risk,
+    so a fabricated one was invisible to the audit.
+    """
+    with session() as s:
+        s.record("release", "output", "return", Q(150000.0, "acre*foot"))
+        assert s.audit_answer("The reservoir released 150000.").ok
+        assert not s.audit_answer("The reservoir released 999999.").ok
+
+
+@pytest.mark.parametrize("answer", [
+    "At station 07374000 the river is high.",
+    "Site 12345678 reported a peak.",
+    "Gage 4155 is offline.",
+    "The crest was surveyed in 1974.",
+    "Evacuate 12 properties.",
+])
+def test_identifiers_and_counts_are_still_left_alone(answer):
+    with session() as s:
+        s.record("release", "output", "return", Q(150000.0, "acre*foot"))
+        assert s.audit_answer(answer).ok, s.audit_answer(answer).report()
+
+
 def test_as_is_not_attoseconds():
     """pint parses "as"; in prose it is never a unit."""
     with session() as s:

@@ -5,6 +5,7 @@ from quantity_guard import (
     DatumMismatch,
     DimensionalityError,
     Q,
+    UnitParseError,
     datums,
 )
 
@@ -53,6 +54,118 @@ def test_a_delta_may_be_added_to_an_elevation():
     result = Q(28.1, "ft", datum="NAVD88") + Q(2.9, "ft")
     assert result.datum == "NAVD88"
     assert result.magnitude == pytest.approx(31.0)
+
+
+@pytest.mark.parametrize("text,unit", [
+    # The spelling NWIS publishes as a unit code, and the one models write in prose.
+    ("1250 ft3/s", "foot**3/second"),
+    ("1250 m3/s", "meter**3/second"),
+    ("1250 ft^3/s", "foot**3/second"),
+    ("1250 ft**3/s", "foot**3/second"),
+    ("150000 acre-ft", "acre*foot"),
+    ("1250 cusecs", "foot**3/second"),
+    ("35.4 cumecs", "meter**3/second"),
+])
+def test_service_and_prose_spellings_parse(text, unit):
+    assert Q.parse(text).dimensionality == Q(1, unit).dimensionality
+
+
+def test_an_exponent_in_scientific_notation_is_not_read_as_a_unit_exponent():
+    assert Q.parse("1e3 cfs").magnitude == pytest.approx(1000)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_scalar_is_refused(value):
+    """Left alone it fails every comparison and surfaces as unsourced, not as invalid."""
+    with pytest.raises(UnitParseError):
+        Q(value, "m**3/s")
+
+
+def test_a_series_keeps_its_gaps_and_still_serialises_as_valid_json():
+    numpy = pytest.importorskip("numpy")
+    import json
+
+    q = Q(numpy.array([1.0, float("nan"), 3.0]), "ft")
+    assert json.loads(json.dumps(q.as_dict()))["value"] == [1.0, None, 3.0]
+    assert "1 missing" in repr(q)
+
+
+@pytest.mark.parametrize("op", [
+    lambda a, b: a + b,
+    lambda a, b: a * b,
+])
+def test_degree_scale_arithmetic_is_a_guard_violation_not_a_pint_error(op):
+    """Water temperature maps onto degC, so this path is reachable from the packs.
+
+    A raw pint error carries no repair() text and escapes the tool-error path.
+    """
+    with pytest.raises(DimensionalityError) as exc:
+        op(Q(21.0, "degC"), Q(1.0, "degC"))
+    assert "point on that scale" in exc.value.message
+
+
+def test_scaling_a_degree_scale_by_a_number_is_also_refused():
+    with pytest.raises(DimensionalityError):
+        Q(21.0, "degC") * 2
+    # Differencing two temperatures is an interval, and stays legal.
+    assert (Q(21.0, "degC") - Q(18.0, "degC")).magnitude == pytest.approx(3.0)
+    # Kelvin is an absolute scale and scales normally.
+    assert (Q(294.0, "K") * 2).magnitude == pytest.approx(588.0)
+
+
+@pytest.mark.parametrize("left,right", [("VA", "W"), ("VA", "var"), ("var", "W")])
+def test_real_apparent_and_reactive_power_do_not_interconvert(left, right):
+    """Converting between them needs a power factor, a property of the circuit.
+
+    Defining VA and var as `volt * ampere` made them silent aliases of the watt and of
+    each other, so 100 VA became 100 W without complaint.
+    """
+    with pytest.raises(DimensionalityError):
+        Q(100.0, left).to(right)
+
+
+@pytest.mark.parametrize("prefixed,base", [("MVA", "VA"), ("kvar", "var"), ("MW", "W")])
+def test_prefixes_still_work_on_the_power_units(prefixed, base):
+    assert Q(1.0, prefixed).to(base).magnitude > 1
+
+
+def test_the_two_million_gallon_per_day_units_are_named_apart():
+    """UK practice writes mgd for imperial gallons; the difference is 20%."""
+    assert Q(1.0, "us_mgd").to("megaliter/day").magnitude == pytest.approx(3.78541, rel=1e-5)
+    assert Q(1.0, "imperial_mgd").to("megaliter/day").magnitude == pytest.approx(4.54609, rel=1e-5)
+
+
+def test_scaling_an_elevation_cannot_launder_its_datum():
+    """`elevation * 1` must not return a datum-free delta.
+
+    The scaled value would otherwise pass every downstream check, which reproduces the
+    exact freeboard error the datum guard exists to prevent.
+    """
+    crest = Q(31.0, "ft", datum="NGVD29")
+    surface = Q(26.5, "ft", datum="NAVD88")
+    for launder in (lambda q: q * 1, lambda q: q / 1, lambda q: 1 * q):
+        with pytest.raises(DatumMismatch):
+            launder(crest)
+        with pytest.raises(DatumMismatch):
+            launder(crest) - surface
+
+
+def test_scaling_a_delta_is_still_allowed():
+    assert (Q(5.0, "ft") * 2).magnitude == pytest.approx(10.0)
+    assert (Q(5.0, "ft") / 2).magnitude == pytest.approx(2.5)
+
+
+def test_subtracting_an_elevation_from_a_delta_is_refused():
+    """`delta - elevation` is neither an elevation nor a delta."""
+    with pytest.raises(DatumMismatch) as exc:
+        Q(5.0, "ft") - Q(31.0, "ft", datum="NAVD88")
+    assert "neither an elevation nor a delta" in exc.value.message
+
+
+def test_a_delta_may_be_subtracted_from_an_elevation():
+    result = Q(31.0, "ft", datum="NAVD88") - Q(2.9, "ft")
+    assert result.datum == "NAVD88"
+    assert result.magnitude == pytest.approx(28.1)
 
 
 def test_datum_shift_requires_a_registered_offset():
