@@ -4,7 +4,14 @@ import json
 
 import pytest
 
-from quantity_guard import CRSMismatch, GuardedTool, Q, quantity_tool, session
+from quantity_guard import (
+    CRSMismatch,
+    DimensionalityError,
+    GuardedTool,
+    Q,
+    quantity_tool,
+    session,
+)
 from quantity_guard.adapters import Toolbox, schema, toolbox
 
 
@@ -105,6 +112,41 @@ def test_warn_mode_still_returns_an_answer():
     tool = _warn_tool()
     with session():
         assert tool("12.4 ft", 29000) is not None
+
+
+def _wrong_return_tool(enforcement, returns={"unit": "m**3/s"}):
+    def leaky(q):
+        """Declares a discharge and returns a length."""
+        return Q(3.0, "ft")
+
+    return GuardedTool(leaky, {"q": {"unit": "m**3/s"}}, returns, enforcement=enforcement)
+
+
+def test_warn_mode_does_not_reject_on_the_return_path():
+    """A violation on the way out is recorded and passed through, as on the way in.
+
+    Returns were previously validated unconditionally, so warn mode raised from the one
+    place it promises not to, and the violation went unrecorded.
+    """
+    tool = _wrong_return_tool("warn")
+    with session() as ledger:
+        assert tool(5.0) == Q(3.0, "ft")
+    assert [v.field for v in ledger.violations] == ["return"]
+    assert ledger.violations[0].code == "dimensionality_error"
+    assert "1 of 1 tool calls would have been blocked" in ledger.enforcement_report()
+
+
+def test_warn_mode_tolerates_a_return_of_the_wrong_shape():
+    tool = _wrong_return_tool("warn", returns={"depth": {"unit": "mm/day"}})
+    with session() as ledger:
+        assert tool(5.0) == Q(3.0, "ft")
+    assert [v.code for v in ledger.violations] == ["guard_violation"]
+
+
+def test_strict_mode_still_rejects_on_the_return_path():
+    with session():
+        with pytest.raises(DimensionalityError):
+            _wrong_return_tool("strict")(5.0)
 
 
 # CRS ---------------------------------------------------------------------------------------

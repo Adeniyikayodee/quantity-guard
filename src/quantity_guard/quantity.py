@@ -14,7 +14,9 @@ import pint
 
 from .errors import CRSMismatch, DatumMismatch, DimensionalityError, UnitParseError
 from .registry import datums as _datums
-from .registry import normalize_quality, ureg, worst_quality
+from .registry import normalize_quality, normalize_unit_text, ureg, worst_quality
+
+_normalise = normalize_unit_text
 
 try:  # optional; only needed for series-valued quantities
     import numpy as _np
@@ -35,8 +37,38 @@ def _magnitude(value: Any) -> Any:
             raise UnitParseError(
                 "series-valued quantities need numpy; install quantity-guard[arrays]"
             )
+        # A series keeps its gaps: NaN is how a time series marks a missing sample, and
+        # dropping or refusing them would misrepresent the record. `as_dict` writes them
+        # as null so the payload stays valid JSON.
         return _np.asarray(value, dtype=float)
-    return float(value)
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        # A scalar has no gap to represent, so a non-finite one is a failed computation
+        # or a sentinel that escaped its filter. Left alone it propagates through every
+        # comparison as False and surfaces as "unsourced" rather than as invalid.
+        raise UnitParseError(
+            f"{value!r} is not a finite magnitude; a missing value should be omitted "
+            f"rather than carried as NaN or infinity"
+        )
+    return number
+
+
+def _offset_unit_error(op: str, left: Any, right: Any) -> DimensionalityError:
+    """A guard violation for arithmetic on a degree scale.
+
+    Water temperature is a first-class hydrology variable and the USGS pack maps straight
+    onto ``degC``, but a degree Celsius is a point on a scale rather than an amount, so
+    pint refuses to add or scale one. That refusal is correct; raising it as a bare pint
+    error was not, because it carries no ``repair()`` text and escapes the tool-error path
+    a model can act on.
+    """
+    shown = f"{left:~} and {right:~}" if isinstance(right, Q) else f"{left:~} by {right!r}"
+    return DimensionalityError(
+        f"cannot {op} {shown}: a temperature on a degree scale is a point on that scale, "
+        f"not an amount of temperature, so it has no meaning under this operation. "
+        f"Difference two temperatures to obtain an interval (which pint writes as "
+        f"delta_degC), or convert to kelvin first"
+    )
 
 
 @dataclass(frozen=True)
@@ -58,7 +90,7 @@ class Q:
     def __post_init__(self) -> None:
         if isinstance(self.units, str):
             try:
-                parsed = ureg.parse_units(self.units)
+                parsed = ureg.parse_units(_normalise(self.units))
             except (pint.errors.UndefinedUnitError, pint.errors.DefinitionSyntaxError) as exc:
                 raise UnitParseError(f"cannot parse unit {self.units!r}: {exc}") from None
             object.__setattr__(self, "units", parsed)
@@ -71,9 +103,13 @@ class Q:
 
     @classmethod
     def parse(cls, text: str, **meta: Any) -> Q:
-        """Build from a string such as ``"12.4 ft"``."""
+        """Build from a string such as ``"12.4 ft"``.
+
+        The service spellings are accepted: ``"1250 ft3/s"`` is what NWIS publishes as a
+        unit code and what models write in prose, and it means the same as ``ft**3/s``.
+        """
         try:
-            pq = ureg.Quantity(text)
+            pq = ureg.Quantity(_normalise(text))
         except Exception as exc:
             raise UnitParseError(f"cannot parse quantity {text!r}: {exc}") from None
         if isinstance(pq, (int, float)) or pq.dimensionless:
@@ -139,6 +175,8 @@ class Q:
             total = self.pint + other.pint
         except pint.DimensionalityError as exc:
             raise DimensionalityError(f"cannot add {self:~} to {other:~}, {exc}") from None
+        except pint.errors.OffsetUnitCalculusError:
+            raise _offset_unit_error("add", self, other) from None
         return Q(
             total.magnitude,
             total.units,
@@ -160,14 +198,27 @@ class Q:
                 left_datum=self.datum,
                 right_datum=other.datum,
             )
+        if self.datum is None and other.datum is not None:
+            raise DatumMismatch(
+                f"cannot subtract an elevation on {other.datum} from a value carrying no "
+                f"datum, since the result is neither an elevation nor a delta; subtract "
+                f"the delta from the elevation instead, or difference two elevations on "
+                f"{other.datum} to obtain one",
+                left_datum=self.datum,
+                right_datum=other.datum,
+            )
         try:
             diff = self.pint - other.pint
         except pint.DimensionalityError as exc:
             raise DimensionalityError(
                 f"cannot subtract {other:~} from {self:~}, {exc}"
             ) from None
+        except pint.errors.OffsetUnitCalculusError:
+            raise _offset_unit_error("subtract", self, other) from None
         # Differencing two readings on one datum yields a delta, which carries no datum.
-        datum = None if (self.datum and other.datum) else (self.datum or other.datum)
+        # The reference can only come from the left operand: the right is either an
+        # elevation being differenced away, or a delta that shifts the left one.
+        datum = None if other.datum else self.datum
         return Q(
             diff.magnitude,
             diff.units,
@@ -177,18 +228,27 @@ class Q:
         )
 
     def _scale(self, other: Any, op: str) -> Q:
+        # Scaling is refused for anything carrying a datum, by a scalar as much as by
+        # another quantity. Twice an elevation is not an elevation, and the result would
+        # otherwise come back as a datum-free delta, which is the one shape that passes
+        # every downstream check: `elevation * 1` would launder an absolute value past
+        # the datum guard entirely.
+        if self.datum is not None or (isinstance(other, Q) and other.datum is not None):
+            raise DatumMismatch(
+                f"cannot {op} a value measured from a vertical datum, since a multiple "
+                f"of an absolute elevation has no physical meaning and the result would "
+                f"no longer carry the reference it was measured from; difference it "
+                f"against another elevation on the same datum to obtain a delta first"
+            )
         if isinstance(other, Q):
-            if self.datum is not None or other.datum is not None:
-                raise DatumMismatch(
-                    f"cannot {op} absolute elevations, since the product of two values "
-                    f"measured from a vertical reference has no meaning; difference them "
-                    f"to deltas first"
-                )
             right, quality = other.pint, worst_quality(self.quality, other.quality)
             crs = self.crs or other.crs
         else:
             right, quality, crs = other, self.quality, self.crs
-        result = self.pint * right if op == "multiply" else self.pint / right
+        try:
+            result = self.pint * right if op == "multiply" else self.pint / right
+        except pint.errors.OffsetUnitCalculusError:
+            raise _offset_unit_error(op, self, other) from None
         return Q(result.magnitude, result.units, crs=crs, quality=quality)
 
     def __mul__(self, other: Any) -> Q:
@@ -234,7 +294,12 @@ class Q:
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "value": self.magnitude if self.is_scalar else self.magnitude.tolist(),
+            # A gap in a series is written as null. `NaN` is what json.dumps emits
+            # otherwise, and it is not valid JSON, so the payload would be rejected by a
+            # conforming parser at the other end of the tool call.
+            "value": self.magnitude if self.is_scalar else [
+                None if v != v else v for v in self.magnitude.tolist()
+            ],
             "unit": format(self.units, "~"),
         }
         for key in ("datum", "crs", "quality", "source"):
@@ -245,8 +310,17 @@ class Q:
     def __format__(self, spec: str) -> str:
         if not self.is_scalar:
             n = self.magnitude.size
-            lo, hi = float(self.magnitude.min()), float(self.magnitude.max())
-            body = f"[{n} values, {lo:g} to {hi:g}] {self.units:~P}"
+            gaps = int(_np.count_nonzero(_np.isnan(self.magnitude)))
+            if gaps == n:
+                body = f"[{n} values, all missing] {self.units:~P}"
+            else:
+                # Ranged over the samples that exist, so one gap does not render the
+                # whole series as "nan to nan".
+                lo = float(_np.nanmin(self.magnitude))
+                hi = float(_np.nanmax(self.magnitude))
+                body = f"[{n} values, {lo:g} to {hi:g}] {self.units:~P}"
+                if gaps:
+                    body = f"[{n} values, {lo:g} to {hi:g}, {gaps} missing] {self.units:~P}"
         elif spec in ("", "~"):
             body = f"{self.magnitude:g} {self.units:~P}"
         else:

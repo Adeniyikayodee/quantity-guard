@@ -24,7 +24,7 @@ from typing import Any, Protocol
 
 from . import annotations as annotations_module
 from .annotations import ToolAnnotation
-from .errors import GuardViolation
+from .errors import GuardViolation, UnconvertedCarryOver
 from .provenance import Session, carry_over_message, session as open_session
 from .quantity import Q
 from .spec import Spec
@@ -43,6 +43,11 @@ class Upstream(Protocol):
 # Middleware -----------------------------------------------------------------------------
 
 
+#: Entries a proxy ledger retains. Carry-over detection only ever compares against recent
+#: outputs, so an unbounded ledger in a long-lived server costs memory and adds nothing.
+LEDGER_LIMIT = 512
+
+
 @dataclass
 class GuardedProxy:
     """Validating middleware around an upstream MCP server."""
@@ -51,15 +56,38 @@ class GuardedProxy:
     annotations: dict[str, ToolAnnotation]
     ledger: Session | None = None
 
+    def begin_session(self) -> None:
+        """Start a fresh ledger, discarding the previous client's quantities.
+
+        A stdio server outlives any one conversation, and carry-over detection asks
+        whether *this* exchange reused a magnitude without converting it. Carrying one
+        ledger across the process lifetime made a legitimate call fail because an earlier,
+        unrelated conversation had returned the same number, and put that conversation's
+        tool output into the error text shown to the current caller.
+        """
+        if self.ledger is not None:
+            self.ledger = Session(context=self.ledger.context,
+                                  max_entries=self.ledger.max_entries)
+
     def list_tools(self) -> list[dict[str, Any]]:
         """Upstream tools, re-advertised with their physical types declared."""
         return [self._enrich(tool) for tool in self.upstream.list_tools()]
 
     def _enrich(self, tool: dict[str, Any]) -> dict[str, Any]:
         note = self.annotations.get(tool.get("name", ""))
-        if note is None or not note.params:
+        if note is None or (not note.params and note.returns is None):
             return tool
         tool = json.loads(json.dumps(tool))
+        if note.returns is not None and note.returns.unit:
+            # The return unit was previously declared in the annotation file, used to
+            # label results, and never shown to the model. That is the wrong way round
+            # for an opaque abbreviation: a model reading "cfs" has to already know the
+            # expansion, and the schema is where it would have learned it.
+            tool["outputSchema"] = note.returns.json_schema()
+            described = tool.get("description", "")
+            unit_note = f"Returns a value in {note.returns.unit}."
+            if unit_note not in described:
+                tool["description"] = f"{described} {unit_note}".strip()
         schema = tool.setdefault("inputSchema", {"type": "object", "properties": {}})
         properties = schema.setdefault("properties", {})
         for name, spec in note.params.items():
@@ -77,6 +105,10 @@ class GuardedProxy:
         note = self.annotations.get(name)
         if note is None:
             return self.upstream.call_tool(name, arguments)
+        if self.ledger is not None:
+            # Counted here rather than in _validate, so the denominator in
+            # enforcement_report() reflects guarded calls actually made.
+            self.ledger.calls += 1
         try:
             forwarded = self._validate(name, note, dict(arguments))
         except GuardViolation as violation:
@@ -99,7 +131,10 @@ class GuardedProxy:
                 if self.ledger is not None:
                     found = self.ledger.detect_carry_over(raw, value)
                     if found is not None:
-                        raise GuardViolation(
+                        # The specific class, so the proxy and the decorator report the
+                        # same `code` for the same failure and anything keyed on it works
+                        # through either path.
+                        raise UnconvertedCarryOver(
                             carry_over_message(raw, value, found), field=name)
                     self.ledger.record(tool, "input", name, value)
                 arguments[name] = value.magnitude
@@ -224,6 +259,11 @@ def serve_stdio(proxy: GuardedProxy, stdin=None, stdout=None) -> None:
 
         try:
             result = _dispatch(proxy, method, message.get("params") or {})
+        except MethodNotFound as exc:
+            # A capability this proxy does not implement, which a client is meant to be
+            # able to probe for; -32603 reads as the server having failed.
+            reply = {"jsonrpc": "2.0", "id": request_id,
+                     "error": {"code": -32601, "message": f"method not found: {exc}"}}
         except Exception as exc:  # a protocol-level failure, not a tool failure
             reply = {"jsonrpc": "2.0", "id": request_id,
                      "error": {"code": -32603, "message": str(exc)}}
@@ -233,8 +273,14 @@ def serve_stdio(proxy: GuardedProxy, stdin=None, stdout=None) -> None:
         stdout.flush()
 
 
+class MethodNotFound(Exception):
+    """An unsupported JSON-RPC method, which is a -32601 rather than a server fault."""
+
+
 def _dispatch(proxy: GuardedProxy, method: str, params: dict[str, Any]) -> dict[str, Any]:
     if method == "initialize":
+        # A new client session. Anything the previous one recorded belongs to it.
+        proxy.begin_session()
         return {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
@@ -246,7 +292,7 @@ def _dispatch(proxy: GuardedProxy, method: str, params: dict[str, Any]) -> dict[
         return {"tools": proxy.list_tools()}
     if method == "tools/call":
         return proxy.call_tool(params.get("name", ""), params.get("arguments") or {})
-    raise ValueError(f"unsupported method: {method}")
+    raise MethodNotFound(method)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -267,8 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     notes = annotations_module.load(args.annotations)
     upstream = StdioUpstream(command)
     try:
-        with open_session() as ledger:
-            serve_stdio(GuardedProxy(upstream, notes, ledger))
+        # The ledger is bounded and reset per client session; see GuardedProxy.
+        serve_stdio(GuardedProxy(upstream, notes, Session(max_entries=LEDGER_LIMIT)))
     finally:
         upstream.close()
     return 0

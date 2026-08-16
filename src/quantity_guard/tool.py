@@ -51,12 +51,26 @@ class GuardedTool:
             raise ValueError(f"{self.name} declares specs for unknown parameters: {sorted(unknown)}")
         functools.update_wrapper(self, fn)
 
-    @staticmethod
-    def _read_returns(returns: Any) -> Any:
+    #: Field names a single ``Spec`` declaration is made of. A returns dict is read as one
+    #: Spec only when every key is one of these.
+    _SPEC_FIELDS = frozenset({
+        "unit", "datum", "crs", "tz", "quality", "description",
+        "require_explicit_unit", "sourced",
+    })
+
+    @classmethod
+    def _read_returns(cls, returns: Any) -> Any:
+        """One declaration, or a mapping of result key to declaration.
+
+        Membership was previously decided by *intersection*: any key that happened to
+        share a name with a Spec field made the whole thing read as a single Spec. A tool
+        returning ``{"stage": ..., "quality": ...}`` — both natural names for a hydrology
+        result — then failed at decoration with a TypeError. Subset is the correct test,
+        because a single Spec's keys are all Spec fields by definition.
+        """
         if returns is None:
             return None
-        if isinstance(returns, dict) and not {"unit", "datum", "crs", "tz", "quality",
-                                              "description", "require_explicit_unit"} & set(returns):
+        if isinstance(returns, dict) and not cls._SPEC_FIELDS.issuperset(returns):
             return {k: Spec.coerce_spec(v) for k, v in returns.items()}
         return Spec.coerce_spec(returns)
 
@@ -79,7 +93,7 @@ class GuardedTool:
                     session.record(self.name, "input", name, value)
 
         result = self.fn(*bound.args, **bound.kwargs)
-        result = self._validate_result(result)
+        result = self._validate_result(result, session)
 
         if session is not None:
             for name, value in self._iter_quantities(result):
@@ -96,12 +110,7 @@ class GuardedTool:
                 self._reject_carry_over(session, raw, value, name)
                 self._reject_unsourced(session, spec, value, name)
         except GuardViolation as violation:
-            if self.enforcement == "strict":
-                raise
-            if session is not None:
-                session.violations.append(
-                    WouldBlock(self.name, name, violation.code, violation.message))
-            return self._lenient(spec, raw, name)
+            return self._decline(violation, name, self._lenient(spec, raw, name), session)
         return value
 
     @staticmethod
@@ -151,22 +160,44 @@ class GuardedTool:
             field=field,
         )
 
-    def _validate_result(self, result: Any) -> Any:
+    def _validate_result(self, result: Any, session=None) -> Any:
         if self.returns is None or self.enforcement == "off":
             return result
         if isinstance(self.returns, Spec):
-            return self.returns.coerce(result, field="return")
+            return self._coerce_result(self.returns, result, "return", session)
         if not isinstance(result, dict):
-            raise GuardViolation(
+            violation = GuardViolation(
                 f"{self.name} declares a mapping of return values, so it must return a dict",
                 field="return",
             )
+            return self._decline(violation, "return", result, session)
         return {
-            key: self.returns[key].coerce(value, field=f"return.{key}")
+            key: self._coerce_result(self.returns[key], value, f"return.{key}", session)
             if key in self.returns
             else value
             for key, value in result.items()
         }
+
+    def _coerce_result(self, spec: Spec, raw: Any, field: str, session) -> Any:
+        """Validate one return value under the tool's enforcement mode.
+
+        Returns are checked under the same mode as arguments. ``warn`` exists to measure
+        what enforcement would block without paying for it, so a violation on the way out
+        is recorded and the raw value is passed on, exactly as on the way in.
+        """
+        try:
+            return spec.coerce(raw, field=field)
+        except GuardViolation as violation:
+            return self._decline(violation, field, self._lenient(spec, raw, field), session)
+
+    def _decline(self, violation: GuardViolation, field: str, fallback: Any, session) -> Any:
+        """Raise under ``strict``, or record and continue under ``warn``."""
+        if self.enforcement == "strict":
+            raise violation
+        if session is not None:
+            session.violations.append(
+                WouldBlock(self.name, field, violation.code, violation.message))
+        return fallback
 
     @staticmethod
     def _iter_quantities(result: Any):

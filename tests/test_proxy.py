@@ -128,6 +128,68 @@ def test_the_same_value_sent_with_its_unit_is_accepted():
     assert upstream.calls[-1][1]["discharge"] == pytest.approx(35.396, rel=1e-3)
 
 
+def test_carry_over_reports_the_same_code_as_the_decorator():
+    """The proxy raised a bare GuardViolation, so the same failure had two codes."""
+    ledger = Session()
+    upstream, proxy = make(ledger)
+    proxy.call_tool("read_discharge", {})
+    result = proxy.call_tool("runoff_depth", {"discharge": 1250, "area": 29000})
+    assert "[unconverted_carry_over]" in result["content"][0]["text"]
+
+
+def test_a_new_client_session_does_not_inherit_the_previous_one_s_ledger():
+    """One ledger for the process lifetime leaked between conversations.
+
+    A legitimate call failed because an unrelated earlier conversation had returned the
+    same number, and the error text quoted that conversation's tool output back to the
+    current caller.
+    """
+    ledger = Session()
+    upstream, proxy = make(ledger)
+    proxy.call_tool("read_discharge", {})
+    assert proxy.call_tool(
+        "runoff_depth", {"discharge": 1250, "area": 29000})["isError"] is True
+
+    proxy.begin_session()
+
+    # A different conversation, which never called read_discharge.
+    result = proxy.call_tool("runoff_depth", {"discharge": 1250, "area": 29000})
+    assert not result.get("isError"), result
+
+
+def test_the_ledger_is_bounded_when_a_limit_is_set():
+    ledger = Session(max_entries=8)
+    upstream, proxy = make(ledger)
+    for _ in range(50):
+        proxy.call_tool("read_discharge", {})
+    assert len(proxy.ledger.entries) == 8
+
+
+def test_guarded_calls_are_counted():
+    ledger = Session()
+    upstream, proxy = make(ledger)
+    proxy.call_tool("read_discharge", {})
+    proxy.call_tool("unannotated", {"x": 1})  # not guarded, not counted
+    proxy.call_tool("read_discharge", {})
+    assert proxy.ledger.calls == 2
+    assert "across 2 tool calls" in proxy.ledger.enforcement_report()
+
+
+def test_a_declared_return_unit_is_advertised_to_the_model():
+    """The unit was used to label results and never shown in the schema.
+
+    An opaque abbreviation is exactly the case where the model needs the declaration:
+    reading "cfs" it has to already know the expansion.
+    """
+    _, proxy = make()
+    tools = {t["name"]: t for t in proxy.list_tools()}
+    assert tools["read_discharge"]["outputSchema"]["x-unit"] == "cfs"
+    assert "Returns a value in cfs." in tools["read_discharge"]["description"]
+    # The upstream's own wording is kept.
+    assert "Latest discharge." in tools["read_discharge"]["description"]
+    assert "outputSchema" not in tools["unannotated"]
+
+
 # Transport ------------------------------------------------------------------------------
 
 
@@ -150,6 +212,39 @@ def test_serve_stdio_answers_the_protocol(tmp_path):
     assert replies[0]["result"]["serverInfo"]["name"] == "quantity-guard"
     assert len(replies[1]["result"]["tools"]) == 3
     assert json.loads(replies[2]["result"]["content"][0]["text"])["unit"] == "cfs"
+
+
+def test_an_unsupported_method_is_method_not_found_not_a_server_fault():
+    """A client probing for an optional capability should see -32601."""
+    import io
+
+    _, proxy = make()
+    requests = "\n".join(json.dumps(m) for m in [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}},
+    ])
+    out = io.StringIO()
+    serve_stdio(proxy, stdin=io.StringIO(requests), stdout=out)
+
+    replies = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert replies[1]["error"]["code"] == -32601
+    assert "resources/list" in replies[1]["error"]["message"]
+
+
+def test_initialize_over_the_transport_resets_the_ledger():
+    import io
+
+    ledger = Session()
+    _, proxy = make(ledger)
+    proxy.call_tool("read_discharge", {})
+    assert proxy.ledger.entries
+
+    out = io.StringIO()
+    serve_stdio(proxy,
+                stdin=io.StringIO(json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})),
+                stdout=out)
+    assert proxy.ledger.entries == []
 
 
 CHILD_SERVER = '''

@@ -5,6 +5,7 @@ from quantity_guard import (
     MissingUnit,
     Q,
     QualityViolation,
+    Spec,
     TimezoneError,
     quantity_tool,
 )
@@ -74,6 +75,67 @@ def test_explicit_unit_may_be_required():
     assert all(v.get("type") != "number" for v in schema["oneOf"])
 
 
+def test_explicit_unit_is_required_on_every_input_shape():
+    """The check previously guarded only the bare-number branch.
+
+    A model could satisfy the parameter with an object or a series carrying no unit,
+    which is the same omission the declaration exists to refuse.
+    """
+
+    @quantity_tool(params={"q": {"unit": "m**3/s", "require_explicit_unit": True}})
+    def strict(q):
+        return q
+
+    for evasion in ({"value": 1250}, {"value": 1250, "unit": ""},
+                    {"value": 1250, "unit": None}, [1250, 1300], (1250, 1300)):
+        with pytest.raises(MissingUnit):
+            strict(evasion)
+
+    # The forms that do carry a unit are untouched.
+    assert strict({"value": 1250, "unit": "cfs"}).magnitude == pytest.approx(35.4, rel=1e-2)
+
+
+def test_a_unitless_object_is_still_accepted_when_no_unit_is_required():
+    @quantity_tool(params={"q": {"unit": "m**3/s"}})
+    def lenient(q):
+        return q
+
+    assert lenient({"value": 1250}).magnitude == pytest.approx(1250)
+    assert lenient([1250, 1300]).units == lenient(1250).units
+
+
+def test_the_object_variant_declares_only_the_keys_it_enforces():
+    """`required` must describe what the validator does, in both directions."""
+
+    def object_variant(spec):
+        prop = spec.json_schema()
+        return next(v for v in prop["oneOf"] if v.get("type") == "object")
+
+    assert object_variant(Spec(unit="m**3/s", require_explicit_unit=True))["required"] == [
+        "value", "unit"]
+    assert object_variant(Spec(unit="m**3/s"))["required"] == ["value"]
+
+
+@pytest.mark.parametrize("returns,is_mapping", [
+    # Natural result names for a hydrology tool that collide with Spec's own fields.
+    ({"stage": {"unit": "ft"}, "quality": {"unit": None}}, True),
+    ({"stage": {"unit": "ft"}, "datum": {"unit": None}}, True),
+    ({"depth": {"unit": "mm/day"}}, True),
+    # A single declaration: every key is a Spec field.
+    ({"unit": "ft"}, False),
+    ({"unit": "ft", "quality": "approved"}, False),
+])
+def test_a_returns_mapping_may_use_names_that_are_also_spec_fields(returns, is_mapping):
+    """Membership was decided by intersection, so one colliding key broke the whole thing."""
+
+    @quantity_tool(params={"s": {"unit": "ft"}}, returns=returns)
+    def measure(s):
+        """A reading."""
+        return s
+
+    assert isinstance(measure.returns, dict) is is_mapping
+
+
 def test_quality_floor_is_enforced():
     @quantity_tool(params={"q": {"unit": "m**3/s", "quality": "approved"}})
     def publish(q):
@@ -82,6 +144,30 @@ def test_quality_floor_is_enforced():
     with pytest.raises(QualityViolation):
         publish({"value": 1250, "unit": "cfs", "quality": "provisional"})
     assert publish({"value": 1250, "unit": "cfs", "quality": "approved"})
+
+
+def test_an_unflagged_record_cannot_satisfy_a_quality_floor():
+    """Absence of a qualifier is not evidence of approval.
+
+    The check previously ran only when the value happened to carry a flag, so dropping
+    the flag satisfied the requirement.
+    """
+
+    @quantity_tool(params={"q": {"unit": "m**3/s", "quality": "approved"}})
+    def publish(q):
+        return q
+
+    for unflagged in (1250, {"value": 1250, "unit": "cfs"}, "1250 cfs", Q(1250, "cfs")):
+        with pytest.raises(QualityViolation):
+            publish(unflagged)
+
+
+def test_a_tool_with_no_quality_floor_still_takes_unflagged_record():
+    @quantity_tool(params={"q": {"unit": "m**3/s"}})
+    def anything(q):
+        return q
+
+    assert anything(1250).quality is None
 
 
 def test_datum_declared_on_a_spec_is_applied_and_checked():
