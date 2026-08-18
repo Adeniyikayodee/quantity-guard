@@ -11,6 +11,7 @@ from .errors import (
     DatumMismatch,
     DimensionalityError,
     GuardViolation,
+    InvalidArguments,
     MissingUnit,
     QualityViolation,
     TimezoneError,
@@ -26,7 +27,9 @@ from .registry import datums, ureg
 from .spec import Spec
 from .tool import GuardedTool, quantity_tool
 
-__version__ = "0.6.2"
+#: Single source of truth for the version; pyproject reads it from here, so the
+#: packaged metadata and the attribute cannot drift apart again.
+__version__ = "0.7.0"
 
 __all__ = [
     "Q",
@@ -52,8 +55,10 @@ __all__ = [
     "TimezoneError",
     "QualityViolation",
     "MissingUnit",
+    "InvalidArguments",
     "UnconvertedCarryOver",
     "UnitParseError",
     "UnsourcedInput",
     "UnsourcedNumber",
+    "__version__",
 ]

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quantity-guard"
-version = "0.7.0"
+dynamic = ["version"]
 description = "Typed physical quantities at the AI agent tool boundary: units, vertical datums, timezones, and record quality, enforced at call time."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,6 +38,9 @@ dev = ["pytest>=8.0", "numpy>=1.24"]
 [project.urls]
 Homepage = "https://github.com/Adeniyikayodee/quantity-guard"
 Issues = "https://github.com/Adeniyikayodee/quantity-guard/issues"
+
+[tool.hatch.version]
+path = "src/quantity_guard/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/quantity_guard"]

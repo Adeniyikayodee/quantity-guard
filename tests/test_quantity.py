@@ -1,6 +1,7 @@
 import pytest
 
 from quantity_guard import (
+    CRSMismatch,
     DatumConversionUnavailable,
     DatumMismatch,
     DimensionalityError,
@@ -209,3 +210,54 @@ def test_parse_from_string():
 def test_bare_string_without_unit_is_refused():
     with pytest.raises(Exception):
         Q.parse("1250")
+
+
+# Equality, and the frames it has to respect ---------------------------------------------
+
+
+def test_equality_converts_as_the_ordering_operators_do():
+    """A dataclass compares field by field, which disagreed with `<` and `>` beside it.
+
+    `Q(1, "m")` was neither less than, greater than, nor equal to `Q(100, "cm")`, which
+    is not a consistent ordering by any reading.
+    """
+    assert Q(1, "m") == Q(100, "cm")
+    assert not Q(1, "m") != Q(100, "cm")
+    assert (Q(1, "m") <= Q(100, "cm"), Q(1, "m") >= Q(100, "cm")) == (True, True)
+    assert hash(Q(1, "m")) == hash(Q(100, "cm"))
+
+
+def test_equality_ignores_provenance_but_not_the_frame():
+    assert Q(3, "ft", quality="provisional", source="a") == Q(3, "ft", quality="approved")
+    assert Q(1, "m") != Q(1, "s")  # different dimensions are unequal, not an error
+
+
+def test_equality_refuses_a_cross_datum_comparison():
+    """`False` is an answer a caller acts on, and `<` already refuses this."""
+    with pytest.raises(DatumMismatch):
+        Q(12.4, "ft", datum="NAVD88") == Q(12.4, "ft")
+    with pytest.raises(DatumMismatch):
+        Q(12.4, "ft", datum="NAVD88") == Q(12.4, "ft", datum="NGVD29")
+
+
+def test_a_series_compares_without_ambiguity():
+    """Field-by-field equality on an array raised rather than answering."""
+    numpy = pytest.importorskip("numpy")
+    assert Q([1.0, 2.0], "m") == Q([100.0, 200.0], "cm")
+    assert Q([1.0, 2.0], "m") != Q([1.0, 3.0], "m")
+    # A gap compares equal to a gap: one series with one sample missing is one series.
+    assert Q([1.0, numpy.nan], "m") == Q([1.0, numpy.nan], "m")
+    with pytest.raises(TypeError):
+        hash(Q([1.0, 2.0], "m"))
+
+
+def test_the_coordinate_frame_is_checked_on_every_combining_operation():
+    """Products and comparisons were unchecked, so the result took one frame silently."""
+    here, there = Q(10, "m", crs="EPSG:4326"), Q(2, "m", crs="EPSG:26915")
+    for operation in (lambda: here * there, lambda: here / there,
+                      lambda: here + there, lambda: here - there,
+                      lambda: here < there, lambda: here == there):
+        with pytest.raises(CRSMismatch):
+            operation()
+    # One frame stated and the other left open is still a legal combination.
+    assert (here * Q(2, "m")).crs == "EPSG:4326"

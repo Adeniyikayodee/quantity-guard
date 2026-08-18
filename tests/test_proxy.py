@@ -190,6 +190,26 @@ def test_a_declared_return_unit_is_advertised_to_the_model():
     assert "outputSchema" not in tools["unannotated"]
 
 
+def test_a_declared_output_schema_is_honoured_by_the_result():
+    """MCP: a server declaring an outputSchema MUST return structured results conforming
+    to it. The proxy declared one and returned only text, and the schema it declared was
+    the input schema's union of number, object, and string, which is not a shape any
+    result can take.
+    """
+    _, proxy = make()
+    tools = {t["name"]: t for t in proxy.list_tools()}
+    declared = tools["read_discharge"]["outputSchema"]
+    assert declared["type"] == "object"
+    assert set(declared["required"]) <= set(declared["properties"])
+
+    result = proxy.call_tool("read_discharge", {})
+    structured = result["structuredContent"]
+    assert structured == {"value": 1250.0, "unit": "cfs"}
+    assert set(declared["required"]) <= set(structured)
+    # The same JSON stays in a text block, for clients that read only `content`.
+    assert json.loads(result["content"][0]["text"]) == structured
+
+
 # Transport ------------------------------------------------------------------------------
 
 

@@ -71,7 +71,7 @@ def _offset_unit_error(op: str, left: Any, right: Any) -> DimensionalityError:
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Q:
     """A physical quantity with reference metadata.
 
@@ -241,6 +241,11 @@ class Q:
                 f"against another elevation on the same datum to obtain a delta first"
             )
         if isinstance(other, Q):
+            # Checked here as it is on addition. A product or quotient of two values
+            # positioned in different coordinate systems is as meaningless as their sum,
+            # and taking `self.crs or other.crs` silently stamped the result with one of
+            # the two frames, which is the shape of error the frame check exists to stop.
+            self._check_frames(other, op)
             right, quality = other.pint, worst_quality(self.quality, other.quality)
             crs = self.crs or other.crs
         else:
@@ -264,6 +269,7 @@ class Q:
     def _comparable(self, other: Q) -> tuple[float, float]:
         if not isinstance(other, Q):
             raise TypeError(f"cannot compare Q against {type(other).__name__}")
+        self._check_frames(other, "compare")
         if self.datum != other.datum:
             raise DatumMismatch(
                 f"cannot compare a value on {self.datum} against one on {other.datum}, "
@@ -273,6 +279,54 @@ class Q:
             return self.pint.magnitude, other.pint.to(self.units).magnitude
         except pint.DimensionalityError as exc:
             raise DimensionalityError(f"cannot compare {self:~} with {other:~}, {exc}") from None
+
+    def __eq__(self, other: Any) -> bool:
+        """Physical equality: the same quantity, however it is written.
+
+        A dataclass generates field-by-field equality, which disagreed with the ordering
+        operators shipping beside it: `Q(1, "m")` was neither less than, greater than,
+        nor equal to `Q(100, "cm")`, and an elevation on NAVD88 compared equal-or-not
+        against one on a gage datum without complaint. Equality converts and checks the
+        reference frame, exactly as `<` does.
+
+        A datum or CRS mismatch is refused rather than answered, because `False` is an
+        answer a caller acts on and these values are neither equal nor unequal.
+        Differing dimensions are simply unequal: a length and a duration are
+        unambiguously not the same quantity, and raising there would make `Q` unusable
+        in an ordinary container. Quality and source are provenance rather than value,
+        so two readings of the same magnitude compare equal whatever their grade.
+        """
+        if not isinstance(other, Q):
+            return NotImplemented
+        self._check_frames(other, "compare")
+        if self.datum != other.datum:
+            raise DatumMismatch(
+                f"cannot compare a value on {self.datum} against one on {other.datum}, "
+                f"since the comparison is only meaningful on a shared reference"
+            )
+        try:
+            right = other.pint.to(self.units).magnitude
+        except pint.DimensionalityError:
+            return False
+        if _np is not None:
+            # A gap compares equal to a gap: two readings of one series with the same
+            # sample missing are the same series, and NaN's own inequality is a float
+            # rule rather than a statement about the record.
+            return bool(_np.array_equal(self.magnitude, right, equal_nan=True))
+        return bool(self.magnitude == right)
+
+    def __ne__(self, other: Any) -> bool:
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __hash__(self) -> int:
+        """Consistent with ``__eq__``: equal quantities hash alike whatever their unit.
+
+        Reduced to base units so `1 m` and `100 cm` land together, and over the same
+        fields equality reads. A series is unhashable, as any mutable magnitude is.
+        """
+        base = self.pint.to_base_units()
+        return hash((float(base.magnitude), base.units, self.datum, self.crs))
 
     def __lt__(self, other: Q) -> bool:
         left, right = self._comparable(other)

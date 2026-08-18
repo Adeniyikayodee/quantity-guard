@@ -166,3 +166,53 @@ def test_a_percentage_answer_is_a_quantity():
 
     assert ureg.Quantity("20.03 %").to("percent").magnitude == pytest.approx(20.03)
     assert Q(1.0, "m**3/s") / Q(5.0, "m**3/s") == Q(0.2, "dimensionless")
+
+
+def test_the_schema_uses_anyof_rather_than_oneof():
+    """The variants are disjoint by type, so the two mean the same thing here, and
+    `oneOf` is the one OpenAI's structured outputs refuse."""
+    prop = schema(_runoff_tool(), "openai")["function"]["parameters"]["properties"]["discharge"]
+    assert "anyOf" in prop and "oneOf" not in prop
+
+
+def test_strict_mode_emits_a_schema_openai_will_accept():
+    """Strict mode validates the schema itself: no unrecognised keyword, and every
+    property of every object listed as required."""
+    definition = schema(_runoff_tool(), "openai", strict=True)
+    assert definition["function"]["strict"] is True
+    parameters = definition["function"]["parameters"]
+    assert "x-" not in json.dumps(parameters)
+
+    def every_object(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" and "properties" in node:
+                yield node
+            for value in node.values():
+                yield from every_object(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from every_object(value)
+
+    for obj in every_object(parameters):
+        assert set(obj["required"]) == set(obj["properties"])
+        assert obj["additionalProperties"] is False
+
+    # The declaration is not lost, only moved to where a restricted dialect can carry it.
+    assert "In m**3/s." in parameters["properties"]["discharge"]["description"]
+
+
+def test_strict_is_refused_where_it_would_do_nothing():
+    with pytest.raises(ValueError, match="OpenAI"):
+        schema(_runoff_tool(), "anthropic", strict=True)
+
+
+def _runoff_tool():
+    @quantity_tool(
+        params={"discharge": {"unit": "m**3/s"}, "area": {"unit": "km**2"}},
+        returns={"unit": "mm/day"},
+    )
+    def runoff(discharge, area=None):
+        """Depth-equivalent runoff."""
+        return discharge
+
+    return runoff

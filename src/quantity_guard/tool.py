@@ -13,7 +13,12 @@ import inspect
 from datetime import datetime
 from typing import Any, Callable
 
-from .errors import GuardViolation, UnconvertedCarryOver, UnsourcedInput
+from .errors import (
+    GuardViolation,
+    InvalidArguments,
+    UnconvertedCarryOver,
+    UnsourcedInput,
+)
 from .provenance import WouldBlock, carry_over_message
 from .provenance import active_session
 from .quantity import Q
@@ -85,7 +90,7 @@ class GuardedTool:
             session.calls += 1
 
         for name, spec in self.params.items():
-            if name in bound.arguments:
+            if name in bound.arguments and not self._is_omitted(name, bound.arguments[name]):
                 raw = bound.arguments[name]
                 value = self._coerce(spec, raw, name, session)
                 bound.arguments[name] = value
@@ -100,6 +105,19 @@ class GuardedTool:
                 session.record(self.name, "output", name, value)
         return result
 
+    def _is_omitted(self, name: str, value: Any) -> bool:
+        """Whether an argument stands for "not supplied" rather than for a quantity.
+
+        `apply_defaults` fills a defaulted parameter in before validation, so a spec on
+        an optional parameter was handed its own default. With the usual `None` that
+        raised "cannot read a quantity from NoneType" for an argument the caller never
+        sent, and through `invoke` the model was told to repair a parameter it had
+        correctly left out. A parameter defaulting to anything else is still validated,
+        so a declared default has to be a legal value for the declaration.
+        """
+        parameter = self.signature.parameters[name]
+        return value is None and parameter.default is None
+
     def _coerce(self, spec: Spec, raw: Any, name: str, session) -> Any:
         """Validate one argument under the tool's enforcement mode."""
         if self.enforcement == "off":
@@ -110,13 +128,27 @@ class GuardedTool:
                 self._reject_carry_over(session, raw, value, name)
                 self._reject_unsourced(session, spec, value, name)
         except GuardViolation as violation:
-            return self._decline(violation, name, self._lenient(spec, raw, name), session)
+            return self._decline(violation, name, lambda: self._lenient(spec, raw, name), session)
         return value
 
-    @staticmethod
-    def _lenient(spec: Spec, raw: Any, name: str) -> Any:
+    @classmethod
+    def _lenient(cls, spec: Spec, raw: Any, name: str) -> Any:
         """Read the argument the way an unguarded tool would, taking the magnitude at
-        face value and trusting the declared unit."""
+        face value and trusting the declared unit.
+
+        Never raises. `warn` exists so a team can measure what enforcement would block
+        without paying for it, and this is the value it passes through; a `Q` that
+        refuses to be built here — a non-finite magnitude, say — would otherwise raise
+        from the one mode that promises not to. The raw value goes through instead,
+        which is what an unguarded tool would have received.
+        """
+        try:
+            return cls._face_value(spec, raw)
+        except Exception:
+            return raw
+
+    @staticmethod
+    def _face_value(spec: Spec, raw: Any) -> Any:
         if spec.is_temporal:
             # An unguarded tool parses whatever timestamp it is handed and reads the
             # clock fields directly, so a naive value keeps its stated hour and an
@@ -170,7 +202,7 @@ class GuardedTool:
                 f"{self.name} declares a mapping of return values, so it must return a dict",
                 field="return",
             )
-            return self._decline(violation, "return", result, session)
+            return self._decline(violation, "return", lambda: result, session)
         return {
             key: self._coerce_result(self.returns[key], value, f"return.{key}", session)
             if key in self.returns
@@ -188,16 +220,21 @@ class GuardedTool:
         try:
             return spec.coerce(raw, field=field)
         except GuardViolation as violation:
-            return self._decline(violation, field, self._lenient(spec, raw, field), session)
+            return self._decline(violation, field, lambda: self._lenient(spec, raw, field), session)
 
-    def _decline(self, violation: GuardViolation, field: str, fallback: Any, session) -> Any:
-        """Raise under ``strict``, or record and continue under ``warn``."""
+    def _decline(self, violation: GuardViolation, field: str,
+                 fallback: Callable[[], Any], session) -> Any:
+        """Raise under ``strict``, or record and continue under ``warn``.
+
+        The fallback is a thunk so that reading the value leniently, which can itself
+        fail, never happens on the path that is about to raise anyway.
+        """
         if self.enforcement == "strict":
             raise violation
         if session is not None:
             session.violations.append(
                 WouldBlock(self.name, field, violation.code, violation.message))
-        return fallback
+        return fallback()
 
     @staticmethod
     def _iter_quantities(result: Any):
@@ -222,13 +259,32 @@ class GuardedTool:
         repaired.
         """
         try:
+            # Bound first, so an argument this tool does not take is reported in the same
+            # shape as every other refusal. It used to fall through to the catch-all
+            # below and come back without a `code` or a `field`, which is the one error a
+            # model handling tool failures by code could not classify.
+            self.signature.bind(**payload)
+        except TypeError as exc:
+            accepted = ", ".join(
+                name for name, parameter in self.signature.parameters.items()
+                if parameter.kind not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+            )
+            return InvalidArguments(
+                f"{self.name} does not accept these arguments ({exc}); it takes "
+                f"{accepted or 'no arguments'}"
+            ).to_tool_error()
+        try:
             result = self(**payload)
         except GuardViolation as violation:
             return violation.to_tool_error()
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
+            # A failure in the tool body rather than at the boundary. Still shaped like a
+            # violation, so one error vocabulary reaches the model.
             return {
                 "isError": True,
                 "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
+                "code": "tool_failed",
+                "field": None,
             }
         return {"isError": False, "result": self._serialise(result)}
 

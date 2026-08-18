@@ -58,7 +58,10 @@ and `"150000 acre-ft"` all parse.
 
 `json_schema()` emits an MCP tool definition extended with `x-unit`, `x-datum`, `x-crs`,
 and `x-tz`, and `toolbox([...]).schemas("openai" | "anthropic")` emits the same
-declarations in those providers' formats, with dispatch and result wrapping.
+declarations in those providers' formats, with dispatch and result wrapping. OpenAI's
+strict function calling validates the schema itself and rejects any keyword it does not
+recognise, so `schemas("openai", strict=True)` moves those extensions into the parameter
+description and emits the restricted dialect that mode accepts.
 
 ### Declaration fields
 
@@ -559,7 +562,9 @@ so their results describe fewer completed tool paths than the denominators sugge
 
 Coordinate reference systems are carried as a consistency tag and checked
 for equality, never converted, because a scalar has no coordinates to reproject and
-reprojection therefore belongs to a geometry type this library does not define.
+reprojection therefore belongs to a geometry type this library does not define. The tag
+is checked wherever two quantities are combined or compared, so a product of values in
+two frames is refused rather than stamped with one of them.
 
 ### Time
 

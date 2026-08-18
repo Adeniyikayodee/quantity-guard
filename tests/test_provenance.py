@@ -468,3 +468,35 @@ def test_a_relabelled_unit_is_caught_like_a_dropped_one():
         assert "labelled m**3/s" in exc.value.message
         # The same magnitude with its real unit converts and is accepted.
         assert downstream({"value": 1250.0, "unit": "cfs"}).magnitude == pytest.approx(35.4, rel=1e-2)
+
+
+def test_a_unit_that_is_also_a_stopword_is_still_a_unit():
+    """`in` was struck out as prose, which judged the number as bare and matched it
+    against a magnitude in any unit at all. A tool returning 0.75 mm made "0.75 in" read
+    as sourced: a factor of 25, through the unit check, decided by spelling alone.
+    """
+
+    @quantity_tool(params={"station": {}}, returns={"unit": "mm"})
+    def rainfall(station):
+        return Q(19.05, "mm")  # 0.75 in
+
+    with session() as ledger:
+        rainfall("07374000")
+        assert ledger.audit_answer("Rainfall totalled 0.75 in.").ok
+        mislabelled = ledger.audit_answer("Rainfall totalled 19.05 in.").mislabelled
+        assert [c.value for c in mislabelled] == [19.05]
+
+
+def test_an_ambiguous_word_that_connects_to_nothing_is_still_prose():
+    """The reading is only taken as a unit when it reaches the ledger, so the sentences
+    the stopword list was written for are left exactly where they were."""
+
+    @quantity_tool(params={"station": {}}, returns={"unit": "ft"})
+    def stage(station):
+        return Q(7.73, "ft")
+
+    with session() as ledger:
+        stage("07374000")
+        for prose in ("The reading was taken at 3 pm.", "Only 5 in total were recorded."):
+            assert ledger.audit_answer(prose).claims == [] or all(
+                c.status == "ignored" for c in ledger.audit_answer(prose).claims)

@@ -152,6 +152,22 @@ _NOT_UNITS = {
     "as", "so", "if", "we", "it", "its", "that", "this", "then", "was", "were",
 }
 
+# Stopwords that are also real units, which is the reason they cannot simply be struck
+# out. Precipitation and stage are published in inches, so "0.75 in" is a measurement in
+# most of the sentences this library reads and prose in the rest. Discarding the token
+# outright judged the number as bare and matched it against a magnitude in any unit at
+# all, so a tool returning 0.75 mm made "0.75 in" read as sourced: a factor of 25, in the
+# unit check, reached only by how the unit happened to be spelled. See `_reads_as_unit`
+# for the test applied instead.
+_AMBIGUOUS_UNITS = {
+    "a",    # annum
+    "am",   # attometre, against the clock reading
+    "as",   # attosecond
+    "at",   # technical atmosphere
+    "in",   # inch
+    "pm",   # picometre, against the clock reading
+}
+
 # Wording that accounts for a magnitude being restated without its negative sign. A
 # tool returning -0.44 ft is correctly reported as "subtract 0.44 ft"; the sign has moved
 # into the prose. Absent any of these, a flipped sign is a claim about the opposite
@@ -333,13 +349,16 @@ class Session:
         written = raw.split(".")[1] if "." in raw else ""
         decimals = len(written)
         unit_token = (match.group("unit") or "").strip()
-        if unit_token.lower() in _NOT_UNITS:
+        if unit_token.lower() in _NOT_UNITS and unit_token.lower() not in _AMBIGUOUS_UNITS:
             unit_token = ""
         text = match.group(0).strip()
 
         # A trailing word that is not a recognised unit is prose, not a measurement, so
         # the number is judged as bare.
         unit = self._parse_unit(unit_token) if unit_token else None
+        if unit is not None and unit_token.lower() in _AMBIGUOUS_UNITS:
+            if not self._reads_as_unit(value, unit, tolerance, decimals):
+                unit = None
         if unit is None:
             unit_token = ""
             text = raw
@@ -396,6 +415,29 @@ class Session:
             text=text, value=value, unit=unit_token or None, status="unsourced",
             detail="no tool output produced this value",
         )
+
+    def _reads_as_unit(self, value: float, unit, tolerance: float,
+                       decimals: int) -> bool:
+        """Whether an ambiguous word beside a number is the unit or is prose.
+
+        It is read as the unit only when doing so connects the number to the ledger:
+        either the reading matches a recorded output once converted, or it names a
+        different unit of the same dimension as an output the magnitude matches, which
+        is the mislabelling this audit exists to report. Failing both, the word is prose
+        and the number is judged bare, so "3 pm" and "5 in total" are left exactly where
+        they were. The test can only ever promote a bare number to a verdict about a
+        retrieved value; it can never make one unsourced.
+        """
+        for entry in self.scalar_outputs:
+            quantity = entry.quantity
+            converted = self._convert(quantity, unit)
+            if converted is None:
+                continue  # not the same dimension, so the word is not this unit
+            if self._close_either_sign(value, converted, tolerance, decimals):
+                return True
+            if self._close_either_sign(value, quantity.magnitude, tolerance, decimals):
+                return True
+        return False
 
     @classmethod
     def _retrieved(cls, text: str, value: float, unit_token: str | None,

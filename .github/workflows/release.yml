@@ -17,6 +17,17 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install build twine
+      # The tag is the release; the version is now read from the module, so this is the
+      # one place the two can still disagree. Caught here rather than on PyPI, where the
+      # filename is permanent.
+      - name: tag matches the packaged version
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/quantity_guard/__init__.py').read_text()).group(1))")
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME does not match __version__ $declared" >&2
+            exit 1
+          fi
       - run: python -m build
       - run: twine check dist/*
       - uses: actions/upload-artifact@v4

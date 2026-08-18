@@ -8,6 +8,7 @@ from quantity_guard import (
     Spec,
     TimezoneError,
     quantity_tool,
+    session,
 )
 
 
@@ -59,7 +60,7 @@ def test_schema_carries_physical_metadata():
     discharge = schema["inputSchema"]["properties"]["discharge"]
     assert discharge["x-unit"] == "m**3/s"
     assert set(schema["inputSchema"]["required"]) == {"discharge", "area"}
-    assert any(v.get("type") == "object" for v in discharge["oneOf"])
+    assert any(v.get("type") == "object" for v in discharge["anyOf"])
 
 
 def test_explicit_unit_may_be_required():
@@ -72,7 +73,7 @@ def test_explicit_unit_may_be_required():
     assert strict("1250 cfs").magnitude == pytest.approx(35.4, rel=1e-2)
 
     schema = strict.json_schema()["inputSchema"]["properties"]["q"]
-    assert all(v.get("type") != "number" for v in schema["oneOf"])
+    assert all(v.get("type") != "number" for v in schema["anyOf"])
 
 
 def test_explicit_unit_is_required_on_every_input_shape():
@@ -109,7 +110,7 @@ def test_the_object_variant_declares_only_the_keys_it_enforces():
 
     def object_variant(spec):
         prop = spec.json_schema()
-        return next(v for v in prop["oneOf"] if v.get("type") == "object")
+        return next(v for v in prop["anyOf"] if v.get("type") == "object")
 
     assert object_variant(Spec(unit="m**3/s", require_explicit_unit=True))["required"] == [
         "value", "unit"]
@@ -213,3 +214,93 @@ def test_object_form_serialised_into_a_string_is_accepted():
 def test_a_string_that_is_not_a_quantity_still_fails():
     with pytest.raises(Exception):
         runoff_depth("{not json at all}", 29000)
+
+
+# What the declaration promises, and what the model is told ------------------------------
+
+
+def test_an_optional_quantity_parameter_may_be_omitted():
+    """`apply_defaults` filled the parameter in before validation, so its own default
+    was validated as though the caller had sent it, and every optional quantity
+    parameter raised on the calls that left it out."""
+
+    @quantity_tool(params={"flow": {"unit": "m**3/s"}, "area": {"unit": "km**2"}})
+    def optional(flow, area=None):
+        return flow if area is None else flow / area
+
+    assert optional(Q(10, "m**3/s")) == Q(10, "m**3/s")
+    assert optional(Q(10, "m**3/s"), area=None) == Q(10, "m**3/s")
+    assert optional.invoke({"flow": 10})["isError"] is False
+    # A default that is a real value is still validated, and reaches the body as one.
+    @quantity_tool(params={"flow": {"unit": "m**3/s"}, "area": {"unit": "km**2"}})
+    def defaulted(flow, area=100):
+        return area
+
+    assert defaulted(Q(10, "m**3/s")) == Q(100, "km**2")
+
+
+def test_warn_mode_never_raises():
+    """`warn` exists to measure what enforcement would block without paying for it.
+
+    The lenient reading was built eagerly, so a value that could not be made into a `Q`
+    at all — a non-finite magnitude — raised from the one mode that promises not to.
+    """
+
+    @quantity_tool(params={"flow": {"unit": "m**3/s"}}, enforcement="warn")
+    def lenient(flow):
+        return flow
+
+    with session() as ledger:
+        assert lenient(float("nan")) != lenient(float("nan"))  # the raw float, passed on
+    assert [v.code for v in ledger.violations] == ["unit_parse_error"] * 2
+
+
+def test_every_violation_names_the_parameter_it_is_about():
+    """Repair text is the point of these errors, and a violation raised inside `Q` knew
+    what was wrong but not which of the tool's arguments carried it."""
+
+    @quantity_tool(params={"flow": {"unit": "m**3/s"}, "depth": {"unit": "mm"}})
+    def two(flow, depth):
+        return flow
+
+    for payload, code in (
+        ({"flow": "1250", "depth": 1}, "unit_parse_error"),
+        ({"flow": 1, "depth": {"value": 1, "unit": "ft", "datum": "NOPE"}}, "datum_mismatch"),
+    ):
+        error = two.invoke(payload)
+        assert error["code"] == code
+        assert error["field"] in ("flow", "depth")
+        assert f"`{error['field']}`" in error["content"][0]["text"]
+
+
+def test_an_argument_the_tool_does_not_take_is_a_violation_like_any_other():
+    error = runoff_depth.invoke({"discharge": 1, "area": 1, "rainfall": 2})
+    assert error["code"] == "invalid_arguments"
+    assert "rainfall" in error["content"][0]["text"]
+
+
+def test_a_spec_declares_a_quantity_or_a_timestamp_but_not_both():
+    """`is_temporal` reads a spec as a timestamp only when it declares no unit, so a
+    spec carrying both silently dropped the timezone: unchecked, and absent from the
+    schema."""
+    with pytest.raises(ValueError, match="not both"):
+        Spec(unit="ft", tz="America/Chicago")
+
+
+def test_the_object_variant_declares_every_key_the_validator_reads():
+    """`additionalProperties: false` beside a validator that accepts more than it
+    advertises made a model reporting a retrieved datum send a schema-invalid call."""
+    prop = Spec(unit="ft").json_schema()
+    variant = next(v for v in prop["anyOf"] if v.get("type") == "object")
+    assert set(variant["properties"]) == {"value", "unit", "datum", "crs", "quality", "source"}
+    # A series is accepted at the boundary, so it is advertised at the boundary too.
+    assert any(v.get("type") == "array" for v in prop["anyOf"])
+    assert any(v.get("type") == "array" for v in variant["properties"]["value"]["anyOf"])
+
+
+def test_a_result_schema_is_an_object_schema():
+    """MCP's outputSchema describes structuredContent, which is an object."""
+    schema = Spec(unit="ft", datum="NAVD88").result_schema()
+    assert schema["type"] == "object"
+    assert schema["required"] == ["value", "unit"]
+    assert schema["x-datum"] == "NAVD88"

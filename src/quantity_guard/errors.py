@@ -50,6 +50,18 @@ class UnitParseError(GuardViolation):
     code = "unit_parse_error"
 
 
+class InvalidArguments(GuardViolation):
+    """The call does not fit the tool's signature at all.
+
+    Raised before any physical check, since an argument the tool does not take, or a
+    required one left out, is a mistake about the tool rather than about a quantity. It
+    is reported in the same shape as every other violation so a model handling tool
+    errors by ``code`` sees one vocabulary.
+    """
+
+    code = "invalid_arguments"
+
+
 class DimensionalityError(GuardViolation):
     """The value is the wrong kind of physical quantity, such as a length where a
     volumetric flow rate is required."""

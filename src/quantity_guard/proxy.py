@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
+from . import __version__
 from . import annotations as annotations_module
 from .annotations import ToolAnnotation
 from .errors import GuardViolation, UnconvertedCarryOver
@@ -83,7 +84,11 @@ class GuardedProxy:
             # label results, and never shown to the model. That is the wrong way round
             # for an opaque abbreviation: a model reading "cfs" has to already know the
             # expansion, and the schema is where it would have learned it.
-            tool["outputSchema"] = note.returns.json_schema()
+            #
+            # `result_schema` rather than `json_schema`, since `outputSchema` describes
+            # `structuredContent`, which is an object; advertising the input schema's
+            # union of number, object, and string described a result no call can return.
+            tool["outputSchema"] = note.returns.result_schema()
             described = tool.get("description", "")
             unit_note = f"Returns a value in {note.returns.unit}."
             if unit_note not in described:
@@ -145,7 +150,10 @@ class GuardedProxy:
     def _annotate(self, tool: str, note: ToolAnnotation,
                   result: dict[str, Any]) -> dict[str, Any]:
         """Restate a bare numeric result with its unit, and record it."""
-        if note.returns is None or result.get("isError"):
+        # Guarded on the unit, as `outputSchema` is: a returns declaration with no unit
+        # has nothing to label the number with, and labelling it anyway wrote the string
+        # "None" into the payload as though it were one.
+        if note.returns is None or not note.returns.unit or result.get("isError"):
             return result
         magnitude = _read_number(result)
         if magnitude is None:
@@ -153,9 +161,15 @@ class GuardedProxy:
         quantity = Q(magnitude, note.returns.unit, datum=note.returns.datum)
         if self.ledger is not None:
             self.ledger.record(tool, "output", "return", quantity)
+        payload = quantity.as_dict()
         return {
             **result,
-            "content": [{"type": "text", "text": json.dumps(quantity.as_dict())}],
+            # A declared `outputSchema` obliges the server to return structured results
+            # conforming to it (MCP 2025-06-18, Tools). The text block carries the same
+            # JSON for clients that read only `content`, which is what the spec asks for
+            # on the compatibility side.
+            "structuredContent": payload,
+            "content": [{"type": "text", "text": json.dumps(payload)}],
         }
 
 
@@ -195,7 +209,7 @@ class StdioUpstream:
         self._request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": {"name": "quantity-guard", "version": "0.1.0"},
+            "clientInfo": {"name": "quantity-guard", "version": __version__},
         })
         self._notify("notifications/initialized", {})
 
@@ -284,7 +298,7 @@ def _dispatch(proxy: GuardedProxy, method: str, params: dict[str, Any]) -> dict[
         return {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "quantity-guard", "version": "0.1.0"},
+            "serverInfo": {"name": "quantity-guard", "version": __version__},
         }
     if method == "ping":
         return {}
