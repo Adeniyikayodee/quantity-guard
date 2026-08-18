@@ -29,7 +29,7 @@ from .tool import GuardedTool, quantity_tool
 
 #: Single source of truth for the version; pyproject reads it from here, so the
 #: packaged metadata and the attribute cannot drift apart again.
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "Q",
